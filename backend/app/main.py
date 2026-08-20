@@ -1,5 +1,9 @@
 from fastapi import FastAPI
 
+from fastapi.middleware.cors import (
+    CORSMiddleware,
+)
+
 from app.database import Base, engine
 
 from app.routers.availability import (
@@ -34,7 +38,39 @@ app = FastAPI(
 
 
 # =========================================================
-# 3. Availability API 연결
+# 3. CORS 설정
+#
+# Next.js:
+# localhost:3000
+#
+# FastAPI:
+# localhost:8001
+#
+# 브라우저가 서로 통신할 수 있도록 허용
+# =========================================================
+
+app.add_middleware(
+    CORSMiddleware,
+
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
+
+    allow_credentials=True,
+
+    allow_methods=[
+        "*",
+    ],
+
+    allow_headers=[
+        "*",
+    ],
+)
+
+
+# =========================================================
+# 4. Availability API 연결
 #
 # GET /providers/{provider_id}/availability
 # =========================================================
@@ -45,7 +81,7 @@ app.include_router(
 
 
 # =========================================================
-# 4. HOLD API 연결
+# 5. HOLD API 연결
 #
 # POST /slots/{slot_id}/hold
 # =========================================================
@@ -56,7 +92,7 @@ app.include_router(
 
 
 # =========================================================
-# 5. Appointment API 연결
+# 6. Appointment API 연결
 #
 # POST /holds/{hold_id}/confirm
 # =========================================================
@@ -67,7 +103,7 @@ app.include_router(
 
 
 # =========================================================
-# 6. 서버 정상 작동 확인용 API
+# 7. 서버 정상 작동 확인용 API
 # =========================================================
 
 @app.get("/")
