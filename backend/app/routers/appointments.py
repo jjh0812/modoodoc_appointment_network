@@ -12,6 +12,7 @@ from app.database import get_db
 from app.models import (
     Appointment,
     AppointmentSlot,
+    DecisionEvent,
     SlotHold,
 )
 
@@ -37,6 +38,12 @@ router = APIRouter(
 
 # =========================================================
 # HOLD → 실제 예약 확정
+#
+# POST /holds/{hold_id}/confirm
+#
+# {
+#     "idempotency_key": "booking-001"
+# }
 # =========================================================
 
 @router.post(
@@ -49,9 +56,12 @@ def confirm_appointment(
     db: Session = Depends(get_db),
 ):
 
-    # -----------------------------------------------------
-    # 1. 빠른 idempotency 확인
-    # -----------------------------------------------------
+    # =====================================================
+    # 1. 빠른 Idempotency 확인
+    #
+    # 이미 같은 요청이 성공했다면
+    # Appointment를 새로 만들지 않는다.
+    # =====================================================
 
     existing_appointment = (
         db.query(Appointment)
@@ -65,8 +75,14 @@ def confirm_appointment(
 
     if existing_appointment is not None:
 
-        # 같은 key를 다른 HOLD에 사용한 경우
-        if existing_appointment.hold_id != hold_id:
+        # -------------------------------------------------
+        # 같은 key를 전혀 다른 HOLD에 재사용
+        # -------------------------------------------------
+
+        if (
+            existing_appointment.hold_id
+            != hold_id
+        ):
 
             db.rollback()
 
@@ -80,12 +96,10 @@ def confirm_appointment(
 
 
         # -------------------------------------------------
-        # 중요:
+        # 같은 예약의 retry
         #
-        # SELECT로 시작된 transaction을
-        # 응답 전에 끝낸다.
-        #
-        # DB connection을 즉시 pool로 반환
+        # 이미 CONFIRMED event도 첫 transaction에서
+        # 함께 저장됐으므로 새 이벤트를 만들지 않는다.
         # -------------------------------------------------
 
         db.commit()
@@ -93,9 +107,11 @@ def confirm_appointment(
         return existing_appointment
 
 
-    # -----------------------------------------------------
+    # =====================================================
     # 2. HOLD snapshot 조회
-    # -----------------------------------------------------
+    #
+    # 어떤 Slot을 잠가야 하는지 알아내기 위함
+    # =====================================================
 
     hold_snapshot = (
         db.query(SlotHold)
@@ -116,11 +132,14 @@ def confirm_appointment(
         )
 
 
-    # -----------------------------------------------------
+    # =====================================================
     # 3. Slot ROW LOCK
     #
     # SELECT ... FOR UPDATE
-    # -----------------------------------------------------
+    #
+    # 같은 예약을 동시에 확정하려는 요청을
+    # PostgreSQL이 직렬화한다.
+    # =====================================================
 
     slot = (
         db.query(AppointmentSlot)
@@ -143,9 +162,9 @@ def confirm_appointment(
         )
 
 
-    # -----------------------------------------------------
+    # =====================================================
     # 4. HOLD ROW LOCK
-    # -----------------------------------------------------
+    # =====================================================
 
     hold = (
         db.query(SlotHold)
@@ -167,12 +186,12 @@ def confirm_appointment(
         )
 
 
-    # -----------------------------------------------------
-    # 5. LOCK 기다리는 동안
-    #    다른 요청이 Appointment를 만들었을 수 있음
+    # =====================================================
+    # 5. LOCK을 기다리는 동안
+    # 다른 요청이 Appointment를 만들었을 수 있음
     #
-    # 그래서 다시 idempotency 검사
-    # -----------------------------------------------------
+    # 그래서 idempotency를 다시 확인
+    # =====================================================
 
     existing_appointment = (
         db.query(Appointment)
@@ -186,7 +205,10 @@ def confirm_appointment(
 
     if existing_appointment is not None:
 
-        if existing_appointment.hold_id != hold_id:
+        if (
+            existing_appointment.hold_id
+            != hold_id
+        ):
 
             db.rollback()
 
@@ -199,28 +221,25 @@ def confirm_appointment(
             )
 
 
-        # transaction 종료
-        # → ROW LOCK 해제
-        # → connection 반환
         db.commit()
 
         return existing_appointment
 
 
-    # -----------------------------------------------------
+    # =====================================================
     # 6. HOLD 만료 여부 확인
-    # -----------------------------------------------------
+    #
+    # 만료됐다면:
+    #
+    # ACTIVE → EXPIRED
+    # HELD   → AVAILABLE
+    # =====================================================
 
     released = release_expired_hold(
         slot=slot,
         db=db,
     )
 
-
-    # -----------------------------------------------------
-    # 만료된 HOLD였다면
-    # EXPIRED 상태를 실제 DB에 저장한 뒤 거절
-    # -----------------------------------------------------
 
     if released:
 
@@ -232,9 +251,9 @@ def confirm_appointment(
         )
 
 
-    # -----------------------------------------------------
+    # =====================================================
     # 7. HOLD 상태 확인
-    # -----------------------------------------------------
+    # =====================================================
 
     if hold.status != "ACTIVE":
 
@@ -246,9 +265,9 @@ def confirm_appointment(
         )
 
 
-    # -----------------------------------------------------
-    # 8. SLOT 상태 확인
-    # -----------------------------------------------------
+    # =====================================================
+    # 8. Slot 상태 확인
+    # =====================================================
 
     if slot.status != "HELD":
 
@@ -260,48 +279,153 @@ def confirm_appointment(
         )
 
 
-    # -----------------------------------------------------
-    # 9. Appointment 생성
-    # -----------------------------------------------------
+    # =====================================================
+    # 9. 이 HOLD가 Transaction Graph에서 시작된 것인지 확인
+    #
+    # Candidate-aware HOLD였다면 앞에서:
+    #
+    # SHOWN
+    # → SELECTED
+    # → HELD
+    #
+    # 이벤트가 이미 존재한다.
+    #
+    # HELD event의 hold_id를 이용해
+    # 어떤 Intent / Candidate인지 다시 찾는다.
+    # =====================================================
+
+    graph_held_event = (
+        db.query(DecisionEvent)
+        .filter(
+            DecisionEvent.hold_id
+            == hold.id,
+
+            DecisionEvent.event_type
+            == "HELD",
+        )
+        .order_by(
+            DecisionEvent.id.desc()
+        )
+        .first()
+    )
+
+
+    # =====================================================
+    # 10. 실제 Appointment 생성
+    # =====================================================
 
     appointment = Appointment(
-        slot_id=slot.id,
-        hold_id=hold.id,
-        source=hold.source,
-        idempotency_key=request.idempotency_key,
-        status="CONFIRMED",
+
+        slot_id=
+            slot.id,
+
+        hold_id=
+            hold.id,
+
+        source=
+            hold.source,
+
+        idempotency_key=
+            request.idempotency_key,
+
+        status=
+            "CONFIRMED",
     )
+
 
     db.add(
         appointment
     )
 
 
-    # -----------------------------------------------------
-    # 10. HOLD / SLOT 확정
-    # -----------------------------------------------------
+    # =====================================================
+    # 11. HOLD / SLOT도 CONFIRMED로 변경
+    # =====================================================
 
     hold.status = "CONFIRMED"
 
     slot.status = "CONFIRMED"
 
 
-    # -----------------------------------------------------
-    # 11. 최종 COMMIT
+    # =====================================================
+    # 12. Appointment ID 확보 + CONFIRMED Event 생성
     #
-    # 여기서 ROW LOCK 해제
-    # connection도 pool로 반환
-    # -----------------------------------------------------
+    # flush는 COMMIT이 아니다.
+    #
+    # Appointment INSERT를 DB에 전달해서
+    # appointment.id를 얻지만
+    # transaction / ROW LOCK은 계속 유지한다.
+    # =====================================================
 
     try:
+
+        db.flush()
+
+
+        # -------------------------------------------------
+        # Candidate Search에서 시작한 예약인 경우만
+        # Transaction Graph에 CONFIRMED 추가
+        # -------------------------------------------------
+
+        if graph_held_event is not None:
+
+            confirmed_event = DecisionEvent(
+
+                intent_id=
+                    graph_held_event.intent_id,
+
+                candidate_match_id=
+                    graph_held_event.candidate_match_id,
+
+                event_type=
+                    "CONFIRMED",
+
+                slot_id=
+                    slot.id,
+
+                hold_id=
+                    hold.id,
+
+                appointment_id=
+                    appointment.id,
+
+                event_metadata={
+                    "source":
+                        hold.source,
+
+                    "idempotency_key":
+                        request.idempotency_key,
+                },
+            )
+
+
+            db.add(
+                confirmed_event
+            )
+
+
+        # =================================================
+        # 13. 최종 COMMIT
+        #
+        # 아래가 한 transaction으로 저장:
+        #
+        # Appointment 생성
+        # Slot      → CONFIRMED
+        # Hold      → CONFIRMED
+        # Event     → CONFIRMED
+        #
+        # 그리고 ROW LOCK 해제
+        # =================================================
 
         db.commit()
 
 
-    # -----------------------------------------------------
-    # UNIQUE constraint
-    # 마지막 방어선
-    # -----------------------------------------------------
+    # =====================================================
+    # 14. DB UNIQUE constraint 마지막 방어선
+    #
+    # 극단적인 race에서도
+    # idempotency_key 중복 INSERT 방지
+    # =====================================================
 
     except IntegrityError:
 
@@ -320,16 +444,15 @@ def confirm_appointment(
 
         if (
             existing_appointment is not None
-            and existing_appointment.hold_id == hold_id
+            and existing_appointment.hold_id
+            == hold_id
         ):
 
-            # SELECT transaction도 종료
             db.commit()
 
             return existing_appointment
 
 
-        # 위 SELECT가 만든 transaction 정리
         db.rollback()
 
         raise HTTPException(
@@ -338,21 +461,11 @@ def confirm_appointment(
         )
 
 
-    # -----------------------------------------------------
-    # 중요:
-    #
-    # 기존:
-    #
-    # db.commit()
-    # db.refresh(appointment)  ← 다시 DB connection 필요
-    #
-    # 수정:
-    #
-    # db.commit()
-    # return appointment
+    # =====================================================
+    # 15. 결과 반환
     #
     # expire_on_commit=False이므로
-    # 다시 SELECT할 필요 없음
-    # -----------------------------------------------------
+    # db.refresh() 필요 없음
+    # =====================================================
 
     return appointment

@@ -18,6 +18,10 @@ from app.routers.appointments import (
     router as appointments_router,
 )
 
+from app.routers.care_options import (
+    router as care_options_router,
+)
+
 
 # =========================================================
 # 1. DB 테이블 생성
@@ -103,7 +107,28 @@ app.include_router(
 
 
 # =========================================================
-# 7. 서버 정상 작동 확인용 API
+# 7. Care Options API 연결
+#
+# POST /care-options/search
+#
+# Patient Intent
+#     ↓
+# Canonical ProviderOffer
+#     ↓
+# Availability
+#     ↓
+# Constraint Match
+#     ↓
+# Top Candidates
+# =========================================================
+
+app.include_router(
+    care_options_router
+)
+
+
+# =========================================================
+# 8. 서버 정상 작동 확인용 API
 # =========================================================
 
 @app.get("/")
