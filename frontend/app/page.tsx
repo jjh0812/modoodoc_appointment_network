@@ -10,32 +10,132 @@ const API_BASE =
   "http://127.0.0.1:8001";
 
 
-type AppointmentSlot = {
-  id: number;
+// =========================================================
+// Types
+// =========================================================
+
+type CareOptionCandidate = {
+  candidate_match_id: number;
+
   provider_id: number;
-  start_time: string;
-  status: string;
+  provider_name: string;
+
+  hospital_id: number;
+  hospital_name: string;
+  district: string;
+
+  offer_id: number;
+
+  procedure_code: string;
+  procedure_name: string;
+
+  price_min: number | null;
+  price_max: number | null;
+
+  earliest_slot_id: number;
+  earliest_slot_time: string;
+
+  constraint_match_score: number;
+
+  budget_status: string;
+
+  data_confidence: number;
+
+  reasons: string[];
+};
+
+
+type CareOptionsSearchResponse = {
+  intent_id: number;
+
+  candidates: CareOptionCandidate[];
 };
 
 
 type SlotHold = {
   id: number;
+
   slot_id: number;
+
   source: string;
+
   expires_at: string;
+
   status: string;
 };
 
 
 type Appointment = {
   id: number;
+
   slot_id: number;
+
   hold_id: number;
+
   source: string;
+
   idempotency_key: string;
+
   status: string;
+
   created_at: string;
 };
+
+
+// =========================================================
+// 가격 표시
+// =========================================================
+
+function formatPrice(
+  value: number | null
+) {
+
+  if (value === null) {
+    return "미확인";
+  }
+
+
+  return (
+    `${Math.floor(value / 10000)}만원`
+  );
+}
+
+
+// =========================================================
+// 가격 범위 표시
+// =========================================================
+
+function formatPriceRange(
+  priceMin: number | null,
+  priceMax: number | null,
+) {
+
+  if (
+    priceMin === null
+    &&
+    priceMax === null
+  ) {
+
+    return "가격 확인 필요";
+  }
+
+
+  if (
+    priceMin !== null
+    &&
+    priceMax === null
+  ) {
+
+    return (
+      `${formatPrice(priceMin)}부터`
+    );
+  }
+
+
+  return (
+    `${formatPrice(priceMin)} ~ ${formatPrice(priceMax)}`
+  );
+}
 
 
 // =========================================================
@@ -65,8 +165,7 @@ function formatSlotTime(
 
 
 // =========================================================
-// HOLD expires_at은 UTC 기준으로 저장했기 때문에
-// 브라우저에서 UTC로 읽도록 처리
+// HOLD expires_at은 UTC로 저장됨
 // =========================================================
 
 function getUtcTime(
@@ -92,36 +191,113 @@ function getUtcTime(
 
 
 // =========================================================
-// Main Page
+// Budget status 한글 표시
+// =========================================================
+
+function budgetStatusLabel(
+  value: string
+) {
+
+  if (value === "WITHIN_BUDGET") {
+    return "예산 범위 내";
+  }
+
+
+  if (value === "PARTIAL_MATCH") {
+    return "예산 일부 일치";
+  }
+
+
+  if (value === "NOT_SPECIFIED") {
+    return "예산 미지정";
+  }
+
+
+  return value;
+}
+
+
+// =========================================================
+// Main
 // =========================================================
 
 export default function Home() {
 
-  // -------------------------------------------------------
-  // 사용자가 AI에게 입력한 문장
-  // -------------------------------------------------------
+  // =======================================================
+  // Patient Intent
+  // =======================================================
 
   const [
     query,
     setQuery,
   ] = useState(
-    "8월 22일 오후에 시력교정 검사 예약 가능한 시간 찾아줘"
+    "8월 22일 오후 강남에서 200만원 정도로 스마일 시력교정 검진 가능한 곳 찾아줘"
   );
 
 
-  // -------------------------------------------------------
-  // API에서 가져온 AVAILABLE 슬롯
-  // -------------------------------------------------------
+  const [
+    district,
+    setDistrict,
+  ] = useState(
+    "강남"
+  );
+
 
   const [
-    slots,
-    setSlots,
-  ] = useState<AppointmentSlot[]>([]);
+    preferredDate,
+    setPreferredDate,
+  ] = useState(
+    "2026-08-22"
+  );
 
 
-  // -------------------------------------------------------
-  // 현재 HOLD
-  // -------------------------------------------------------
+  const [
+    timeWindow,
+    setTimeWindow,
+  ] = useState(
+    "AFTERNOON"
+  );
+
+
+  const [
+    budgetMax,
+    setBudgetMax,
+  ] = useState(
+    2000000
+  );
+
+
+  // =======================================================
+  // Search 결과
+  // =======================================================
+
+  const [
+    intentId,
+    setIntentId,
+  ] = useState<number | null>(
+    null
+  );
+
+
+  const [
+    candidates,
+    setCandidates,
+  ] = useState<CareOptionCandidate[]>(
+    []
+  );
+
+
+  const [
+    selectedCandidate,
+    setSelectedCandidate,
+  ] = useState<CareOptionCandidate | null>(
+    null
+  );
+
+
+  // =======================================================
+  // Transaction
+  // =======================================================
 
   const [
     hold,
@@ -131,10 +307,6 @@ export default function Home() {
   );
 
 
-  // -------------------------------------------------------
-  // 확정된 Appointment
-  // -------------------------------------------------------
-
   const [
     appointment,
     setAppointment,
@@ -143,16 +315,18 @@ export default function Home() {
   );
 
 
-  // -------------------------------------------------------
-  // 같은 CONFIRM retry에 계속 사용할 key
-  // -------------------------------------------------------
-
   const [
     idempotencyKey,
     setIdempotencyKey,
   ] = useState<string | null>(
     null
   );
+
+
+  const [
+    secondsLeft,
+    setSecondsLeft,
+  ] = useState(0);
 
 
   const [
@@ -167,26 +341,12 @@ export default function Home() {
   ] = useState("");
 
 
-  // -------------------------------------------------------
-  // HOLD 남은 시간
-  // -------------------------------------------------------
-
-  const [
-    secondsLeft,
-    setSecondsLeft,
-  ] = useState(0);
-
-
   // =======================================================
   // HOLD countdown
   // =======================================================
 
   useEffect(
     () => {
-
-      // HOLD가 없거나
-      // 이미 CONFIRMED 상태라면
-      // countdown을 돌릴 필요가 없음
 
       if (
         !hold
@@ -250,78 +410,49 @@ export default function Home() {
 
 
   // =======================================================
-  // 1. Availability 조회
+  // 1. Care Option Search
   // =======================================================
 
-  async function searchAvailability() {
+  async function searchCareOptions() {
 
-    setLoading(true);
-
-    setError("");
-
-
-    try {
-
-      const response =
-        await fetch(
-          `${API_BASE}/providers/1/availability`
-        );
-
-
-      if (!response.ok) {
-
-        throw new Error(
-          "예약 가능시간 조회에 실패했습니다."
-        );
-      }
-
-
-      const data:
-        AppointmentSlot[] =
-        await response.json();
-
-
-      setSlots(
-        data
-      );
-
-    }
-
-    catch (err) {
+    if (
+      hold
+      &&
+      hold.status === "ACTIVE"
+      &&
+      secondsLeft > 0
+    ) {
 
       setError(
-        err instanceof Error
-          ? err.message
-          : "알 수 없는 오류가 발생했습니다."
+        "현재 ACTIVE HOLD가 있습니다. 예약을 확정하거나 HOLD가 만료된 뒤 다시 검색해주세요."
       );
 
+      return;
     }
 
-    finally {
-
-      setLoading(false);
-    }
-  }
-
-
-  // =======================================================
-  // 2. 슬롯 HOLD
-  // =======================================================
-
-  async function holdSlot(
-    slotId: number
-  ) {
 
     setLoading(true);
 
     setError("");
+
+    setCandidates([]);
+
+    setIntentId(null);
+
+    setSelectedCandidate(null);
+
+    setHold(null);
+
+    setAppointment(null);
+
+    setIdempotencyKey(null);
 
 
     try {
 
       const response =
         await fetch(
-          `${API_BASE}/slots/${slotId}/hold`,
+          `${API_BASE}/care-options/search`,
           {
             method: "POST",
 
@@ -332,7 +463,29 @@ export default function Home() {
 
             body: JSON.stringify(
               {
-                source: "ChatGPT",
+                procedure_code:
+                  "VISION_CORRECTION_SMILE",
+
+                district:
+                  district,
+
+                preferred_date:
+                  preferredDate,
+
+                time_window:
+                  timeWindow,
+
+                budget_max:
+                  budgetMax,
+
+                source:
+                  "AI_SIMULATOR",
+
+                raw_query:
+                  query,
+
+                limit:
+                  3,
               }
             ),
           }
@@ -348,47 +501,23 @@ export default function Home() {
         throw new Error(
           body.detail
           ??
-          "HOLD에 실패했습니다."
+          "후보 검색에 실패했습니다."
         );
       }
 
 
       const data:
-        SlotHold =
+        CareOptionsSearchResponse =
         await response.json();
 
 
-      setHold(
-        data
+      setIntentId(
+        data.intent_id
       );
 
 
-      // 이전 예약 결과가 있었다면 초기화
-      setAppointment(
-        null
-      );
-
-
-      // -----------------------------------------------
-      // 이 HOLD의 CONFIRM retry들은
-      // 모두 같은 idempotency key를 사용
-      // -----------------------------------------------
-
-      setIdempotencyKey(
-        crypto.randomUUID()
-      );
-
-
-      // -----------------------------------------------
-      // HOLD된 슬롯은 AVAILABLE 목록에서 제거
-      // -----------------------------------------------
-
-      setSlots(
-        currentSlots =>
-          currentSlots.filter(
-            slot =>
-              slot.id !== slotId
-          )
+      setCandidates(
+        data.candidates
       );
 
     }
@@ -411,7 +540,111 @@ export default function Home() {
 
 
   // =======================================================
-  // 3. 예약 CONFIRM
+  // 2. Candidate 선택 → HOLD
+  // =======================================================
+
+  async function selectCandidate(
+    candidate: CareOptionCandidate
+  ) {
+
+    setLoading(true);
+
+    setError("");
+
+
+    try {
+
+      const response =
+        await fetch(
+          (
+            `${API_BASE}`
+            +
+            `/slots/${candidate.earliest_slot_id}/hold`
+          ),
+          {
+            method: "POST",
+
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
+
+            body: JSON.stringify(
+              {
+                source:
+                  "AI_SIMULATOR",
+
+                candidate_match_id:
+                  candidate.candidate_match_id,
+              }
+            ),
+          }
+        );
+
+
+      if (!response.ok) {
+
+        const body =
+          await response.json();
+
+
+        throw new Error(
+          body.detail
+          ??
+          "슬롯 HOLD에 실패했습니다."
+        );
+      }
+
+
+      const holdData:
+        SlotHold =
+        await response.json();
+
+
+      setSelectedCandidate(
+        candidate
+      );
+
+
+      setHold(
+        holdData
+      );
+
+
+      setAppointment(
+        null
+      );
+
+
+      // ---------------------------------------------------
+      // 이 HOLD의 모든 retry에서 같은 key 사용
+      // ---------------------------------------------------
+
+      setIdempotencyKey(
+        crypto.randomUUID()
+      );
+
+    }
+
+    catch (err) {
+
+      setError(
+        err instanceof Error
+          ? err.message
+          : "알 수 없는 오류가 발생했습니다."
+      );
+
+    }
+
+    finally {
+
+      setLoading(false);
+    }
+  }
+
+
+  // =======================================================
+  // 3. CONFIRM
   // =======================================================
 
   async function confirmAppointment() {
@@ -435,7 +668,11 @@ export default function Home() {
 
       const response =
         await fetch(
-          `${API_BASE}/holds/${hold.id}/confirm`,
+          (
+            `${API_BASE}`
+            +
+            `/holds/${hold.id}/confirm`
+          ),
           {
             method: "POST",
 
@@ -473,26 +710,10 @@ export default function Home() {
         await response.json();
 
 
-      // -----------------------------------------------
-      // Appointment 화면 상태 업데이트
-      // -----------------------------------------------
-
       setAppointment(
         data
       );
 
-
-      // -----------------------------------------------
-      // 중요:
-      //
-      // 백엔드에서는 CONFIRM 성공 시
-      //
-      // SlotHold
-      // ACTIVE → CONFIRMED
-      //
-      // 로 바뀌므로
-      // 프론트의 hold 상태도 같이 갱신한다.
-      // -----------------------------------------------
 
       setHold(
         currentHold =>
@@ -504,10 +725,6 @@ export default function Home() {
             : null
       );
 
-
-      // -----------------------------------------------
-      // 예약이 확정됐으므로 countdown 종료
-      // -----------------------------------------------
 
       setSecondsLeft(
         0
@@ -533,7 +750,7 @@ export default function Home() {
 
 
   // =======================================================
-  // 화면
+  // UI
   // =======================================================
 
   return (
@@ -543,7 +760,7 @@ export default function Home() {
         min-h-screen
         bg-slate-50
         px-6
-        py-12
+        py-10
         text-slate-900
       "
     >
@@ -551,7 +768,7 @@ export default function Home() {
       <div
         className="
           mx-auto
-          max-w-5xl
+          max-w-7xl
         "
       >
 
@@ -559,9 +776,9 @@ export default function Home() {
             Header
         ================================================= */}
 
-        <div
+        <header
           className="
-            mb-10
+            mb-9
           "
         >
 
@@ -569,12 +786,12 @@ export default function Home() {
             className="
               mb-3
               text-sm
-              font-semibold
+              font-bold
               tracking-wide
               text-blue-600
             "
           >
-            MODOODOC APPOINTMENT NETWORK
+            MODOODOC EXECUTABLE DECISION NETWORK
           </div>
 
 
@@ -585,35 +802,36 @@ export default function Home() {
               tracking-tight
             "
           >
-            AI Booking Simulator
+            AI Care Decision Simulator
           </h1>
 
 
           <p
             className="
               mt-4
-              max-w-2xl
+              max-w-3xl
               text-slate-600
             "
           >
-            외부 AI가 병원의 실제 예약 가능시간을
-            조회하고, 슬롯을 HOLD한 뒤,
-            안전하게 예약을 확정하는 프로토타입입니다.
+            환자의 조건을 canonical intent로 변환하고,
+            정규화된 병원 Offer와 실제 Availability를
+            비교한 뒤 선택된 후보를 안전하게
+            HOLD → CONFIRM하는 프로토타입입니다.
           </p>
 
-        </div>
+        </header>
 
 
         <div
           className="
             grid
             gap-6
-            lg:grid-cols-2
+            xl:grid-cols-[1.15fr_0.85fr]
           "
         >
 
           {/* =================================================
-              왼쪽: AI Simulator
+              LEFT
           ================================================= */}
 
           <section
@@ -627,35 +845,30 @@ export default function Home() {
             "
           >
 
-            <div
+            <h2
               className="
-                mb-5
-                text-lg
-                font-semibold
+                text-xl
+                font-bold
               "
             >
-              AI Assistant
-            </div>
+              Patient Intent
+            </h2>
 
 
-            {/* USER MESSAGE */}
-
-            <div
+            <p
               className="
-                mb-5
-                ml-auto
-                max-w-[90%]
-                rounded-2xl
-                bg-blue-600
-                p-4
-                text-white
+                mt-1
+                text-sm
+                text-slate-500
               "
             >
-              {query}
-            </div>
+              현재 자연어 자체를 LLM이 파싱하는 단계는
+              아직 연결하지 않았으며, 아래 구조화 조건과
+              원문을 함께 backend에 전달합니다.
+            </p>
 
 
-            {/* INPUT */}
+            {/* QUERY */}
 
             <textarea
               value={query}
@@ -668,6 +881,7 @@ export default function Home() {
               }
 
               className="
+                mt-5
                 min-h-24
                 w-full
                 resize-none
@@ -676,165 +890,232 @@ export default function Home() {
                 border-slate-300
                 p-4
                 outline-none
-                transition
                 focus:border-blue-500
               "
             />
 
 
+            {/* CONSTRAINTS */}
+
+            <div
+              className="
+                mt-4
+                grid
+                gap-3
+                md:grid-cols-2
+              "
+            >
+
+              <label
+                className="
+                  text-sm
+                  font-semibold
+                "
+              >
+                지역
+
+                <input
+                  value={district}
+
+                  onChange={
+                    event =>
+                      setDistrict(
+                        event.target.value
+                      )
+                  }
+
+                  className="
+                    mt-2
+                    w-full
+                    rounded-xl
+                    border
+                    border-slate-300
+                    px-4
+                    py-3
+                    font-normal
+                  "
+                />
+
+              </label>
+
+
+              <label
+                className="
+                  text-sm
+                  font-semibold
+                "
+              >
+                날짜
+
+                <input
+                  type="date"
+
+                  value={preferredDate}
+
+                  onChange={
+                    event =>
+                      setPreferredDate(
+                        event.target.value
+                      )
+                  }
+
+                  className="
+                    mt-2
+                    w-full
+                    rounded-xl
+                    border
+                    border-slate-300
+                    px-4
+                    py-3
+                    font-normal
+                  "
+                />
+
+              </label>
+
+
+              <label
+                className="
+                  text-sm
+                  font-semibold
+                "
+              >
+                시간대
+
+                <select
+                  value={timeWindow}
+
+                  onChange={
+                    event =>
+                      setTimeWindow(
+                        event.target.value
+                      )
+                  }
+
+                  className="
+                    mt-2
+                    w-full
+                    rounded-xl
+                    border
+                    border-slate-300
+                    px-4
+                    py-3
+                    font-normal
+                  "
+                >
+                  <option value="MORNING">
+                    오전
+                  </option>
+
+                  <option value="AFTERNOON">
+                    오후
+                  </option>
+
+                  <option value="EVENING">
+                    저녁
+                  </option>
+
+                  <option value="ANY">
+                    상관없음
+                  </option>
+                </select>
+
+              </label>
+
+
+              <label
+                className="
+                  text-sm
+                  font-semibold
+                "
+              >
+                최대 예산
+
+                <input
+                  type="number"
+
+                  value={budgetMax}
+
+                  onChange={
+                    event =>
+                      setBudgetMax(
+                        Number(
+                          event.target.value
+                        )
+                      )
+                  }
+
+                  className="
+                    mt-2
+                    w-full
+                    rounded-xl
+                    border
+                    border-slate-300
+                    px-4
+                    py-3
+                    font-normal
+                  "
+                />
+
+              </label>
+
+            </div>
+
+
             <button
               onClick={
-                searchAvailability
+                searchCareOptions
               }
 
               disabled={loading}
 
               className="
-                mt-3
+                mt-5
                 w-full
                 rounded-xl
-                bg-slate-900
+                bg-slate-950
                 px-5
                 py-3
-                font-semibold
+                font-bold
                 text-white
                 transition
-                hover:bg-slate-700
+                hover:bg-slate-800
                 disabled:opacity-50
               "
             >
               {
                 loading
                   ? "처리 중..."
-                  : "예약 가능한 시간 찾기"
+                  : "조건에 맞는 실행 가능한 후보 찾기"
               }
             </button>
 
 
-            {/* AVAILABLE SLOTS */}
+            {/* INTENT RESULT */}
 
             {
-              slots.length > 0
+              intentId !== null
               &&
               (
                 <div
                   className="
-                    mt-6
-                    rounded-2xl
-                    bg-slate-100
-                    p-5
+                    mt-5
+                    rounded-xl
+                    bg-blue-50
+                    p-4
+                    text-sm
+                    text-blue-900
                   "
                 >
-
-                  <div
-                    className="
-                      mb-1
-                      font-semibold
-                    "
-                  >
-                    김OO 원장
-                  </div>
-
-
-                  <div
-                    className="
-                      mb-4
-                      text-sm
-                      text-slate-500
-                    "
-                  >
-                    안과 · 시력교정
-                  </div>
-
-
-                  <div
-                    className="
-                      space-y-3
-                    "
-                  >
-
-                    {
-                      slots.map(
-                        slot => (
-
-                          <button
-                            key={slot.id}
-
-                            onClick={
-                              () =>
-                                holdSlot(
-                                  slot.id
-                                )
-                            }
-
-                            disabled={
-                              loading
-                              ||
-                              (
-                                hold !== null
-                                &&
-                                hold.status === "ACTIVE"
-                              )
-                            }
-
-                            className="
-                              flex
-                              w-full
-                              items-center
-                              justify-between
-                              rounded-xl
-                              border
-                              border-slate-200
-                              bg-white
-                              p-4
-                              text-left
-                              transition
-                              hover:border-blue-400
-                              hover:bg-blue-50
-                              disabled:cursor-not-allowed
-                              disabled:opacity-50
-                            "
-                          >
-
-                            <span
-                              className="
-                                font-medium
-                              "
-                            >
-                              {
-                                formatSlotTime(
-                                  slot.start_time
-                                )
-                              }
-                            </span>
-
-
-                            <span
-                              className="
-                                rounded-full
-                                bg-emerald-100
-                                px-3
-                                py-1
-                                text-xs
-                                font-semibold
-                                text-emerald-700
-                              "
-                            >
-                              AVAILABLE
-                            </span>
-
-                          </button>
-
-                        )
-                      )
-                    }
-
-                  </div>
-
+                  PatientIntent #{intentId} 생성
+                  · 입력 지역 "{district}"는 backend의
+                  Intent Normalization을 거쳐 검색됩니다.
                 </div>
               )
             }
 
+
+            {/* ERROR */}
 
             {
               error
@@ -855,15 +1136,506 @@ export default function Home() {
               )
             }
 
+
+            {/* =================================================
+                CANDIDATES
+            ================================================= */}
+
+            {
+              intentId !== null
+              &&
+              (
+                <div
+                  className="
+                    mt-7
+                  "
+                >
+
+                  <div
+                    className="
+                      mb-4
+                      flex
+                      items-end
+                      justify-between
+                    "
+                  >
+
+                    <div>
+
+                      <h2
+                        className="
+                          text-xl
+                          font-bold
+                        "
+                      >
+                        실행 가능한 후보
+                      </h2>
+
+
+                      <p
+                        className="
+                          mt-1
+                          text-sm
+                          text-slate-500
+                        "
+                      >
+                        의료 품질 순위가 아니라
+                        사용자가 지정한 조건과의 일치도입니다.
+                      </p>
+
+                    </div>
+
+
+                    <div
+                      className="
+                        text-sm
+                        text-slate-400
+                      "
+                    >
+                      {candidates.length} candidates
+                    </div>
+
+                  </div>
+
+
+                  {
+                    candidates.length === 0
+                      ? (
+                          <div
+                            className="
+                              rounded-xl
+                              border
+                              border-dashed
+                              border-slate-300
+                              p-8
+                              text-center
+                              text-slate-500
+                            "
+                          >
+                            현재 조건에 맞는 실행 가능한
+                            후보가 없습니다.
+                          </div>
+                        )
+
+                      : (
+                          <div
+                            className="
+                              space-y-4
+                            "
+                          >
+
+                            {
+                              candidates.map(
+                                (
+                                  candidate,
+                                  index,
+                                ) => {
+
+                                  const isSelected =
+                                    selectedCandidate
+                                      ?.candidate_match_id
+                                    ===
+                                    candidate.candidate_match_id;
+
+
+                                  return (
+
+                                    <div
+                                      key={
+                                        candidate
+                                          .candidate_match_id
+                                      }
+
+                                      className={`
+                                        rounded-2xl
+                                        border
+                                        p-5
+                                        transition
+
+                                        ${
+                                          isSelected
+                                            ? "border-blue-500 bg-blue-50"
+                                            : "border-slate-200 bg-white"
+                                        }
+                                      `}
+                                    >
+
+                                      <div
+                                        className="
+                                          flex
+                                          gap-4
+                                        "
+                                      >
+
+                                        {/* RANK */}
+
+                                        <div
+                                          className="
+                                            flex
+                                            h-10
+                                            w-10
+                                            shrink-0
+                                            items-center
+                                            justify-center
+                                            rounded-full
+                                            bg-slate-950
+                                            font-bold
+                                            text-white
+                                          "
+                                        >
+                                          {index + 1}
+                                        </div>
+
+
+                                        <div
+                                          className="
+                                            min-w-0
+                                            flex-1
+                                          "
+                                        >
+
+                                          <div
+                                            className="
+                                              flex
+                                              flex-wrap
+                                              items-start
+                                              justify-between
+                                              gap-3
+                                            "
+                                          >
+
+                                            <div>
+
+                                              <div
+                                                className="
+                                                  text-lg
+                                                  font-bold
+                                                "
+                                              >
+                                                {
+                                                  candidate
+                                                    .hospital_name
+                                                }
+                                              </div>
+
+
+                                              <div
+                                                className="
+                                                  mt-1
+                                                  text-sm
+                                                  text-slate-600
+                                                "
+                                              >
+                                                {
+                                                  candidate
+                                                    .provider_name
+                                                }
+                                                {" · "}
+                                                {
+                                                  candidate
+                                                    .procedure_name
+                                                }
+                                              </div>
+
+                                            </div>
+
+
+                                            <div
+                                              className="
+                                                rounded-full
+                                                bg-slate-100
+                                                px-3
+                                                py-1
+                                                text-sm
+                                                font-bold
+                                              "
+                                            >
+                                              조건 일치{" "}
+                                              {
+                                                candidate
+                                                  .constraint_match_score
+                                              }
+                                            </div>
+
+                                          </div>
+
+
+                                          {/* CORE DATA */}
+
+                                          <div
+                                            className="
+                                              mt-4
+                                              grid
+                                              gap-3
+                                              sm:grid-cols-3
+                                            "
+                                          >
+
+                                            <div
+                                              className="
+                                                rounded-xl
+                                                bg-slate-50
+                                                p-3
+                                              "
+                                            >
+                                              <div
+                                                className="
+                                                  text-xs
+                                                  text-slate-400
+                                                "
+                                              >
+                                                예상 가격
+                                              </div>
+
+                                              <div
+                                                className="
+                                                  mt-1
+                                                  font-bold
+                                                "
+                                              >
+                                                {
+                                                  formatPriceRange(
+                                                    candidate
+                                                      .price_min,
+
+                                                    candidate
+                                                      .price_max,
+                                                  )
+                                                }
+                                              </div>
+                                            </div>
+
+
+                                            <div
+                                              className="
+                                                rounded-xl
+                                                bg-slate-50
+                                                p-3
+                                              "
+                                            >
+                                              <div
+                                                className="
+                                                  text-xs
+                                                  text-slate-400
+                                                "
+                                              >
+                                                가장 빠른 슬롯
+                                              </div>
+
+                                              <div
+                                                className="
+                                                  mt-1
+                                                  font-bold
+                                                "
+                                              >
+                                                {
+                                                  formatSlotTime(
+                                                    candidate
+                                                      .earliest_slot_time
+                                                  )
+                                                }
+                                              </div>
+                                            </div>
+
+
+                                            <div
+                                              className="
+                                                rounded-xl
+                                                bg-slate-50
+                                                p-3
+                                              "
+                                            >
+                                              <div
+                                                className="
+                                                  text-xs
+                                                  text-slate-400
+                                                "
+                                              >
+                                                데이터 Confidence
+                                              </div>
+
+                                              <div
+                                                className="
+                                                  mt-1
+                                                  font-bold
+                                                "
+                                              >
+                                                {
+                                                  candidate
+                                                    .data_confidence
+                                                    .toFixed(2)
+                                                }
+                                              </div>
+                                            </div>
+
+                                          </div>
+
+
+                                          {/* BUDGET */}
+
+                                          <div
+                                            className="
+                                              mt-4
+                                            "
+                                          >
+
+                                            <span
+                                              className={`
+                                                inline-flex
+                                                rounded-full
+                                                px-3
+                                                py-1
+                                                text-xs
+                                                font-bold
+
+                                                ${
+                                                  candidate
+                                                    .budget_status
+                                                  ===
+                                                  "WITHIN_BUDGET"
+
+                                                    ? "bg-emerald-100 text-emerald-700"
+
+                                                    : "bg-amber-100 text-amber-700"
+                                                }
+                                              `}
+                                            >
+                                              {
+                                                budgetStatusLabel(
+                                                  candidate
+                                                    .budget_status
+                                                )
+                                              }
+                                            </span>
+
+                                          </div>
+
+
+                                          {/* REASONS */}
+
+                                          <div
+                                            className="
+                                              mt-4
+                                              rounded-xl
+                                              bg-slate-50
+                                              p-4
+                                            "
+                                          >
+
+                                            <div
+                                              className="
+                                                mb-2
+                                                text-xs
+                                                font-bold
+                                                uppercase
+                                                tracking-wide
+                                                text-slate-400
+                                              "
+                                            >
+                                              왜 이 후보가 나왔나
+                                            </div>
+
+
+                                            <ul
+                                              className="
+                                                space-y-1
+                                                text-sm
+                                                text-slate-600
+                                              "
+                                            >
+                                              {
+                                                candidate
+                                                  .reasons
+                                                  .map(
+                                                    reason => (
+
+                                                      <li
+                                                        key={reason}
+                                                      >
+                                                        ✓ {reason}
+                                                      </li>
+
+                                                    )
+                                                  )
+                                              }
+                                            </ul>
+
+                                          </div>
+
+
+                                          {/* SELECT */}
+
+                                          <button
+                                            onClick={
+                                              () =>
+                                                selectCandidate(
+                                                  candidate
+                                                )
+                                            }
+
+                                            disabled={
+                                              loading
+                                              ||
+                                              (
+                                                hold !== null
+                                                &&
+                                                hold.status
+                                                === "ACTIVE"
+                                              )
+                                              ||
+                                              appointment !== null
+                                            }
+
+                                            className="
+                                              mt-4
+                                              w-full
+                                              rounded-xl
+                                              bg-blue-600
+                                              px-4
+                                              py-3
+                                              font-bold
+                                              text-white
+                                              hover:bg-blue-500
+                                              disabled:cursor-not-allowed
+                                              disabled:opacity-40
+                                            "
+                                          >
+                                            {
+                                              isSelected
+                                                ? "선택됨 · HOLD 완료"
+                                                : "이 후보 선택하고 HOLD"
+                                            }
+                                          </button>
+
+                                        </div>
+
+                                      </div>
+
+                                    </div>
+
+                                  );
+                                }
+                              )
+                            }
+
+                          </div>
+                        )
+                  }
+
+                </div>
+              )
+            }
+
           </section>
 
 
           {/* =================================================
-              오른쪽: Transaction 상태
+              RIGHT — TRANSACTION
           ================================================= */}
 
-          <section
+          <aside
             className="
+              h-fit
               rounded-2xl
               border
               border-slate-200
@@ -873,22 +1645,33 @@ export default function Home() {
             "
           >
 
-            <div
+            <h2
               className="
-                mb-6
-                text-lg
-                font-semibold
+                text-xl
+                font-bold
               "
             >
-              Transaction
-            </div>
+              Transaction Graph
+            </h2>
 
 
-            {/* AVAILABLE */}
+            <p
+              className="
+                mt-1
+                text-sm
+                text-slate-500
+              "
+            >
+              이번 환자 의사결정이 실제 예약까지
+              어떻게 이어지는지 보여줍니다.
+            </p>
+
+
+            {/* SHOWN */}
 
             <div
               className="
-                mb-4
+                mt-6
                 rounded-xl
                 border
                 border-slate-200
@@ -899,7 +1682,7 @@ export default function Home() {
               <div
                 className="
                   text-xs
-                  font-semibold
+                  font-bold
                   text-slate-400
                 "
               >
@@ -910,31 +1693,39 @@ export default function Home() {
               <div
                 className="
                   mt-1
-                  font-semibold
+                  font-bold
                 "
               >
-                Availability
+                SHOWN
               </div>
 
 
               <div
                 className="
-                  mt-1
+                  mt-2
                   text-sm
-                  text-slate-500
+                  text-slate-600
                 "
               >
-                병원의 실제 AVAILABLE 슬롯 조회
+                {
+                  intentId
+                    ? (
+                        `${candidates.length}개의 후보를 PatientIntent #${intentId}에 표시`
+                      )
+                    : (
+                        "아직 후보 검색 전입니다."
+                      )
+                }
               </div>
 
             </div>
 
 
-            {/* HOLD */}
+            {/* SELECTED */}
 
             <div
               className="
-                mb-4
+                mt-3
                 rounded-xl
                 border
                 border-slate-200
@@ -945,7 +1736,7 @@ export default function Home() {
               <div
                 className="
                   text-xs
-                  font-semibold
+                  font-bold
                   text-slate-400
                 "
               >
@@ -956,10 +1747,91 @@ export default function Home() {
               <div
                 className="
                   mt-1
-                  font-semibold
+                  font-bold
                 "
               >
-                HOLD
+                SELECTED
+              </div>
+
+
+              {
+                selectedCandidate
+                  ? (
+                      <div
+                        className="
+                          mt-2
+                          text-sm
+                          text-slate-600
+                        "
+                      >
+                        Candidate #
+                        {
+                          selectedCandidate
+                            .candidate_match_id
+                        }
+
+                        <br />
+
+                        {
+                          selectedCandidate
+                            .hospital_name
+                        }
+
+                        {" · "}
+
+                        {
+                          selectedCandidate
+                            .provider_name
+                        }
+                      </div>
+                    )
+
+                  : (
+                      <div
+                        className="
+                          mt-2
+                          text-sm
+                          text-slate-400
+                        "
+                      >
+                        아직 선택된 후보가 없습니다.
+                      </div>
+                    )
+              }
+
+            </div>
+
+
+            {/* HOLD */}
+
+            <div
+              className="
+                mt-3
+                rounded-xl
+                border
+                border-slate-200
+                p-4
+              "
+            >
+
+              <div
+                className="
+                  text-xs
+                  font-bold
+                  text-slate-400
+                "
+              >
+                STEP 3
+              </div>
+
+
+              <div
+                className="
+                  mt-1
+                  font-bold
+                "
+              >
+                HELD
               </div>
 
 
@@ -972,25 +1844,16 @@ export default function Home() {
                         "
                       >
 
-                        {/* -----------------------------------
-                            HOLD 상태를 하드코딩하지 않고
-                            실제 React 상태를 표시
-                        ----------------------------------- */}
-
                         <div
                           className="
                             text-sm
-                            font-semibold
+                            font-bold
                             text-emerald-700
                           "
                         >
                           Hold #{hold.id} {hold.status}
                         </div>
 
-
-                        {/* -----------------------------------
-                            ACTIVE인 동안에만 countdown 표시
-                        ----------------------------------- */}
 
                         {
                           hold.status === "ACTIVE"
@@ -999,7 +1862,7 @@ export default function Home() {
                                   <div
                                     className="
                                       mt-2
-                                      text-3xl
+                                      text-4xl
                                       font-bold
                                     "
                                   >
@@ -1031,22 +1894,23 @@ export default function Home() {
                                   </div>
                                 </>
                               )
+
                             : (
                                 <div
                                   className="
                                     mt-2
                                     text-sm
-                                    font-semibold
                                     text-emerald-700
                                   "
                                 >
-                                  예약 확정 완료
+                                  HOLD 처리 완료
                                 </div>
                               )
                         }
 
                       </div>
                     )
+
                   : (
                       <div
                         className="
@@ -1055,7 +1919,7 @@ export default function Home() {
                           text-slate-400
                         "
                       >
-                        아직 HOLD된 슬롯이 없습니다.
+                        아직 HOLD가 없습니다.
                       </div>
                     )
               }
@@ -1063,10 +1927,11 @@ export default function Home() {
             </div>
 
 
-            {/* CONFIRM */}
+            {/* CONFIRMED */}
 
             <div
               className="
+                mt-3
                 rounded-xl
                 border
                 border-slate-200
@@ -1077,21 +1942,21 @@ export default function Home() {
               <div
                 className="
                   text-xs
-                  font-semibold
+                  font-bold
                   text-slate-400
                 "
               >
-                STEP 3
+                STEP 4
               </div>
 
 
               <div
                 className="
                   mt-1
-                  font-semibold
+                  font-bold
                 "
               >
-                Confirm
+                CONFIRMED
               </div>
 
 
@@ -1100,7 +1965,7 @@ export default function Home() {
                   ? (
                       <div
                         className="
-                          mt-4
+                          mt-3
                           rounded-xl
                           bg-emerald-50
                           p-4
@@ -1136,10 +2001,6 @@ export default function Home() {
                           </div>
 
                           <div>
-                            Source: {appointment.source}
-                          </div>
-
-                          <div>
                             Status: {appointment.status}
                           </div>
 
@@ -1147,6 +2008,7 @@ export default function Home() {
 
                       </div>
                     )
+
                   : (
                       <button
                         onClick={
@@ -1158,22 +2020,21 @@ export default function Home() {
                           ||
                           hold.status !== "ACTIVE"
                           ||
-                          loading
-                          ||
                           secondsLeft <= 0
+                          ||
+                          loading
                         }
 
                         className="
                           mt-4
                           w-full
                           rounded-xl
-                          bg-blue-600
-                          px-5
+                          bg-emerald-600
+                          px-4
                           py-3
-                          font-semibold
+                          font-bold
                           text-white
-                          transition
-                          hover:bg-blue-500
+                          hover:bg-emerald-500
                           disabled:cursor-not-allowed
                           disabled:opacity-40
                         "
@@ -1186,7 +2047,7 @@ export default function Home() {
             </div>
 
 
-            {/* Architecture */}
+            {/* ARCHITECTURE */}
 
             <div
               className="
@@ -1200,38 +2061,20 @@ export default function Home() {
                 text-slate-300
               "
             >
-
-              <div>
-                AI / Browser
-              </div>
-
-              <div>
-                ↓
-              </div>
-
-              <div>
-                FastAPI :8001
-              </div>
-
-              <div>
-                ↓
-              </div>
-
-              <div>
-                PostgreSQL :5434
-              </div>
-
-              <div>
-                ↓
-              </div>
-
-              <div>
-                AVAILABLE → HELD → CONFIRMED
-              </div>
-
+              <div>Raw Hospital Data</div>
+              <div>↓</div>
+              <div>Normalization Layer</div>
+              <div>↓</div>
+              <div>Canonical ProviderOffer</div>
+              <div>↓</div>
+              <div>Patient Intent</div>
+              <div>↓</div>
+              <div>Constraint Match</div>
+              <div>↓</div>
+              <div>SHOWN → SELECTED → HELD → CONFIRMED</div>
             </div>
 
-          </section>
+          </aside>
 
         </div>
 
@@ -1243,10 +2086,9 @@ export default function Home() {
             text-slate-400
           "
         >
-          Prototype note: 현재 자연어 문장은
-          Provider #1의 availability API 호출로
-          매핑하는 simulator이며,
-          실제 LLM intent parsing은 아직 연결하지 않았습니다.
+          Synthetic prototype only. 병원명·의사명·가격은
+          가상 데이터이며 constraint_match_score는
+          의료적 품질이나 치료 추천 점수가 아닙니다.
         </div>
 
       </div>
