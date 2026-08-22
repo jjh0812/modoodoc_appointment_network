@@ -4,7 +4,10 @@ from fastapi.middleware.cors import (
     CORSMiddleware,
 )
 
-from app.database import Base, engine
+from app.database import (
+    Base,
+    engine,
+)
 
 from app.routers.availability import (
     router as availability_router,
@@ -22,6 +25,10 @@ from app.routers.care_options import (
     router as care_options_router,
 )
 
+from app.routers.analytics import (
+    router as analytics_router,
+)
+
 
 # =========================================================
 # 1. DB 테이블 생성
@@ -37,7 +44,10 @@ Base.metadata.create_all(
 # =========================================================
 
 app = FastAPI(
-    title="Modoodoc Appointment Network Prototype"
+    title=(
+        "Modoodoc Appointment "
+        "Network Prototype"
+    )
 )
 
 
@@ -128,13 +138,42 @@ app.include_router(
 
 
 # =========================================================
-# 8. 서버 정상 작동 확인용 API
+# 8. Decision Analytics API 연결
+#
+# GET /analytics/decision-funnel
+#
+# Patient Intent
+#     ↓
+# SHOWN
+#     ↓
+# SELECTED
+#     ↓
+# HELD
+#     ↓
+# CONFIRMED
+#
+# 검색 → 선택 → HOLD → 예약 확정
+# 전체 전환 Funnel을 집계한다.
+# =========================================================
+
+app.include_router(
+    analytics_router
+)
+
+
+# =========================================================
+# 9. 서버 정상 작동 확인용 API
+#
+# GET /
 # =========================================================
 
 @app.get("/")
 def health_check():
 
     return {
-        "service": "modoodoc-appointment-network",
-        "status": "ok",
+        "service":
+            "modoodoc-appointment-network",
+
+        "status":
+            "ok",
     }
