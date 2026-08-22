@@ -29,9 +29,24 @@ from app.routers.analytics import (
     router as analytics_router,
 )
 
+from app.routers.decision_feedback import (
+    router as decision_feedback_router,
+)
+
 
 # =========================================================
 # 1. DB 테이블 생성
+#
+# 각 Router / Service가 import되면서
+# SQLAlchemy Model들이 Base.metadata에 등록된다.
+#
+# 그 다음 create_all()이:
+#
+# 기존 테이블은 유지
+# +
+# 새 decision_feedback 테이블이 없으면 생성
+#
+# 한다.
 # =========================================================
 
 Base.metadata.create_all(
@@ -84,7 +99,7 @@ app.add_middleware(
 
 
 # =========================================================
-# 4. Availability API 연결
+# 4. Availability API
 #
 # GET /providers/{provider_id}/availability
 # =========================================================
@@ -95,9 +110,15 @@ app.include_router(
 
 
 # =========================================================
-# 5. HOLD API 연결
+# 5. HOLD API
 #
 # POST /slots/{slot_id}/hold
+#
+# AVAILABLE
+#     ↓
+# SELECTED
+#     ↓
+# HELD
 # =========================================================
 
 app.include_router(
@@ -106,9 +127,13 @@ app.include_router(
 
 
 # =========================================================
-# 6. Appointment API 연결
+# 6. Appointment API
 #
 # POST /holds/{hold_id}/confirm
+#
+# HELD
+#     ↓
+# CONFIRMED
 # =========================================================
 
 app.include_router(
@@ -117,19 +142,23 @@ app.include_router(
 
 
 # =========================================================
-# 7. Care Options API 연결
+# 7. Care Options API
 #
 # POST /care-options/search
 #
 # Patient Intent
 #     ↓
-# Canonical ProviderOffer
+# Intent Normalization
 #     ↓
+# Canonical ProviderOffer
+#     +
 # Availability
 #     ↓
 # Constraint Match
 #     ↓
 # Top Candidates
+#     ↓
+# SHOWN
 # =========================================================
 
 app.include_router(
@@ -138,11 +167,19 @@ app.include_router(
 
 
 # =========================================================
-# 8. Decision Analytics API 연결
+# 8. Decision Analytics API
 #
 # GET /analytics/decision-funnel
 #
-# Patient Intent
+# GET /analytics/hospitals
+#
+# GET
+# /analytics/hospitals/{hospital_id}/decision-loss
+#
+#
+# 분석 대상:
+#
+# SEARCHED
 #     ↓
 # SHOWN
 #     ↓
@@ -152,8 +189,15 @@ app.include_router(
 #     ↓
 # CONFIRMED
 #
-# 검색 → 선택 → HOLD → 예약 확정
-# 전체 전환 Funnel을 집계한다.
+#
+# 그리고 병원별:
+#
+# 노출
+# 선택
+# 예약
+# Loss Signal
+#
+# 을 분석한다.
 # =========================================================
 
 app.include_router(
@@ -162,7 +206,46 @@ app.include_router(
 
 
 # =========================================================
-# 9. 서버 정상 작동 확인용 API
+# 9. Decision Feedback API
+#
+# 사용자가 직접 밝힌
+# "선택 이유 / 비선택 이유" 저장
+#
+#
+# POST /decision-feedback/selection
+#
+# 예:
+#
+# PRICE
+# AVAILABILITY
+# LOCATION
+# DATA_CONFIDENCE
+#
+#
+# POST /decision-feedback/no-selection
+#
+# 예:
+#
+# BUDGET_TOO_HIGH
+# TIME_NOT_MATCH
+# LOCATION_NOT_MATCH
+# INSUFFICIENT_INFORMATION
+#
+#
+# DecisionEvent:
+# "사용자가 무엇을 했는가"
+#
+# DecisionFeedback:
+# "사용자가 왜 그렇게 했다고 말했는가"
+# =========================================================
+
+app.include_router(
+    decision_feedback_router
+)
+
+
+# =========================================================
+# 10. Health Check
 #
 # GET /
 # =========================================================
@@ -171,6 +254,7 @@ app.include_router(
 def health_check():
 
     return {
+
         "service":
             "modoodoc-appointment-network",
 
