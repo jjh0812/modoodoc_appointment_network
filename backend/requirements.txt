@@ -5,3 +5,4 @@ pydantic
 psycopg[binary]
 python-dotenv
 mcp[cli]>=2,<3
+openai
