@@ -1,6 +1,5 @@
 import json
-
-from datetime import datetime
+import uuid
 
 from urllib.error import HTTPError
 from urllib.request import (
@@ -13,22 +12,28 @@ from app.database import SessionLocal
 from app.models import (
     Appointment,
     AppointmentSlot,
+    DecisionEvent,
     SlotHold,
 )
 
 
 # =========================================================
-# 테스트 설정
+# 설정
 # =========================================================
 
-BASE_URL = "http://127.0.0.1:8001"
+BASE_URL = (
+    "http://127.0.0.1:8001"
+)
 
-PROVIDER_ID = 1
-
-SLOT_1_ID = 1
+TEST_SOURCE = (
+    "IDEMPOTENCY_KEY_REUSE_TEST"
+)
 
 IDEMPOTENCY_KEY = (
-    "shared-idempotency-key-001"
+    "idempotency-reuse-test-"
+    + str(
+        uuid.uuid4()
+    )
 )
 
 
@@ -45,9 +50,12 @@ def post_json(
         url,
         data=json.dumps(
             body
-        ).encode("utf-8"),
+        ).encode(
+            "utf-8"
+        ),
         headers={
-            "Content-Type": "application/json",
+            "Content-Type":
+                "application/json",
         },
         method="POST",
     )
@@ -60,314 +68,101 @@ def post_json(
             timeout=30,
         ) as response:
 
-            return (
-                response.status,
+            raw_body = (
                 response
                 .read()
-                .decode("utf-8"),
+                .decode(
+                    "utf-8"
+                )
+            )
+
+
+            return (
+                response.status,
+                json.loads(
+                    raw_body
+                ),
             )
 
 
     except HTTPError as error:
 
-        return (
-            error.code,
+        raw_body = (
             error
             .read()
-            .decode("utf-8"),
+            .decode(
+                "utf-8"
+            )
+        )
+
+
+        try:
+
+            parsed_body = (
+                json.loads(
+                    raw_body
+                )
+            )
+
+        except json.JSONDecodeError:
+
+            parsed_body = {
+                "raw":
+                    raw_body,
+            }
+
+
+        return (
+            error.code,
+            parsed_body,
         )
 
 
 # =========================================================
-# 1. 테스트 DB 초기화
+# 1. AVAILABLE Slot 두 개 선택
+#
+# 중요:
+#
+# 기존 Appointment / Hold를 전부 삭제하지 않는다.
+#
+# 기존 MCP / Web transaction은 그대로 보존한다.
 # =========================================================
 
 db = SessionLocal()
 
 try:
 
-    # 기존 예약부터 삭제
-    db.query(Appointment).delete()
-
-    # 기존 HOLD 삭제
-    db.query(SlotHold).delete()
-
-
-    # -----------------------------------------------------
-    # 첫 번째 슬롯
-    # -----------------------------------------------------
-
-    slot_1 = (
-        db.query(AppointmentSlot)
+    slots = (
+        db.query(
+            AppointmentSlot
+        )
         .filter(
-            AppointmentSlot.id == SLOT_1_ID
+            AppointmentSlot.status
+            == "AVAILABLE"
         )
-        .first()
-    )
-
-
-    if slot_1 is None:
-
-        raise RuntimeError(
-            "Slot #1 not found"
+        .order_by(
+            AppointmentSlot.id.asc()
         )
-
-
-    slot_1.status = "AVAILABLE"
-
-
-    # -----------------------------------------------------
-    # 두 번째 테스트 슬롯 찾기
-    #
-    # 없으면 새로 생성
-    # -----------------------------------------------------
-
-    second_slot_time = datetime(
-        2026,
-        8,
-        22,
-        15,
-        0,
-        0,
-    )
-
-
-    slot_2 = (
-        db.query(AppointmentSlot)
-        .filter(
-            AppointmentSlot.provider_id
-            == PROVIDER_ID,
-            AppointmentSlot.start_time
-            == second_slot_time,
-        )
-        .first()
-    )
-
-
-    if slot_2 is None:
-
-        slot_2 = AppointmentSlot(
-            provider_id=PROVIDER_ID,
-            start_time=second_slot_time,
-            status="AVAILABLE",
-        )
-
-        db.add(
-            slot_2
-        )
-
-        db.flush()
-
-
-    slot_2.status = "AVAILABLE"
-
-
-    db.commit()
-
-
-    slot_2_id = slot_2.id
-
-finally:
-
-    db.close()
-
-
-print(
-    "TEST RESET: PASS"
-)
-
-print(
-    "SLOT 1:",
-    SLOT_1_ID
-)
-
-print(
-    "SLOT 2:",
-    slot_2_id
-)
-
-
-# =========================================================
-# 2. 첫 번째 슬롯 HOLD
-# =========================================================
-
-status, body = post_json(
-    f"{BASE_URL}/slots/{SLOT_1_ID}/hold",
-    {
-        "source": "ChatGPT",
-    },
-)
-
-
-if status != 200:
-
-    raise RuntimeError(
-        f"First HOLD failed: {status} {body}"
-    )
-
-
-hold_1 = json.loads(
-    body
-)
-
-hold_1_id = hold_1["id"]
-
-
-print(
-    "FIRST HOLD CREATED:",
-    hold_1_id
-)
-
-
-# =========================================================
-# 3. 첫 번째 HOLD 예약 확정
-#
-# shared-idempotency-key-001 사용
-# =========================================================
-
-first_confirm_status, first_confirm_body = (
-    post_json(
-        (
-            f"{BASE_URL}"
-            f"/holds/{hold_1_id}/confirm"
-        ),
-        {
-            "idempotency_key":
-                IDEMPOTENCY_KEY,
-        },
-    )
-)
-
-
-print(
-    "FIRST CONFIRM STATUS:",
-    first_confirm_status
-)
-
-print(
-    "FIRST CONFIRM BODY:",
-    first_confirm_body
-)
-
-
-# =========================================================
-# 4. 두 번째 슬롯 HOLD
-# =========================================================
-
-status, body = post_json(
-    f"{BASE_URL}/slots/{slot_2_id}/hold",
-    {
-        "source": "Gemini",
-    },
-)
-
-
-if status != 200:
-
-    raise RuntimeError(
-        f"Second HOLD failed: {status} {body}"
-    )
-
-
-hold_2 = json.loads(
-    body
-)
-
-hold_2_id = hold_2["id"]
-
-
-print(
-    "SECOND HOLD CREATED:",
-    hold_2_id
-)
-
-
-# =========================================================
-# 5. 다른 HOLD에 같은 idempotency_key 사용
-#
-# 이 요청은 반드시 409가 나와야 한다.
-# =========================================================
-
-second_confirm_status, second_confirm_body = (
-    post_json(
-        (
-            f"{BASE_URL}"
-            f"/holds/{hold_2_id}/confirm"
-        ),
-        {
-            "idempotency_key":
-                IDEMPOTENCY_KEY,
-        },
-    )
-)
-
-
-print(
-    "SECOND CONFIRM STATUS:",
-    second_confirm_status
-)
-
-print(
-    "SECOND CONFIRM BODY:",
-    second_confirm_body
-)
-
-
-# =========================================================
-# 6. PostgreSQL 실제 상태 확인
-# =========================================================
-
-db = SessionLocal()
-
-try:
-
-    appointments = (
-        db.query(Appointment)
-        .filter(
-            Appointment.idempotency_key
-            == IDEMPOTENCY_KEY
+        .limit(
+            2
         )
         .all()
     )
 
 
-    slot_1 = (
-        db.query(AppointmentSlot)
-        .filter(
-            AppointmentSlot.id
-            == SLOT_1_ID
+    if len(slots) < 2:
+
+        raise RuntimeError(
+            "At least 2 AVAILABLE slots are required"
         )
-        .first()
+
+
+    SLOT_1_ID = (
+        slots[0].id
     )
 
-
-    slot_2 = (
-        db.query(AppointmentSlot)
-        .filter(
-            AppointmentSlot.id
-            == slot_2_id
-        )
-        .first()
-    )
-
-
-    hold_1 = (
-        db.query(SlotHold)
-        .filter(
-            SlotHold.id
-            == hold_1_id
-        )
-        .first()
-    )
-
-
-    hold_2 = (
-        db.query(SlotHold)
-        .filter(
-            SlotHold.id
-            == hold_2_id
-        )
-        .first()
+    SLOT_2_ID = (
+        slots[1].id
     )
 
 
@@ -377,79 +172,674 @@ finally:
 
 
 print()
-print(
-    "========================================"
-)
-
-print(
-    "IDEMPOTENCY KEY REUSE TEST RESULT"
-)
 
 print(
     "========================================"
 )
 
-
 print(
-    "APPOINTMENT COUNT:",
-    len(appointments)
+    "TEST SLOT SELECTION"
 )
 
 print(
-    "SLOT 1 STATUS:",
-    slot_1.status
+    "========================================"
 )
 
 print(
-    "HOLD 1 STATUS:",
-    hold_1.status
+    "SLOT 1:",
+    SLOT_1_ID,
 )
 
 print(
-    "SLOT 2 STATUS:",
-    slot_2.status
+    "SLOT 2:",
+    SLOT_2_ID,
 )
 
 print(
-    "HOLD 2 STATUS:",
-    hold_2.status
+    "IDEMPOTENCY KEY:",
+    IDEMPOTENCY_KEY,
+)
+
+print(
+    "TEST SLOT SELECTION: PASS"
 )
 
 
 # =========================================================
-# 7. 최종 PASS / FAIL
+# 테스트 도중 만들어진 Hold 추적
+#
+# 마지막 cleanup에서 이것들만 삭제한다.
 # =========================================================
 
-passed = (
-    first_confirm_status == 200
-
-    and second_confirm_status == 409
-
-    and len(appointments) == 1
-
-    and appointments[0].hold_id == hold_1_id
-
-    and slot_1.status == "CONFIRMED"
-
-    and hold_1.status == "CONFIRMED"
-
-    and slot_2.status == "HELD"
-
-    and hold_2.status == "ACTIVE"
-)
+hold_ids = []
 
 
-print()
+try:
 
+    # =====================================================
+    # 2. 첫 번째 Slot HOLD
+    # =====================================================
 
-if passed:
+    hold_1_status, hold_1_body = (
+        post_json(
 
-    print(
-        "IDEMPOTENCY KEY REUSE: PASS"
+            (
+                f"{BASE_URL}"
+                f"/slots/{SLOT_1_ID}/hold"
+            ),
+
+            {
+                "source":
+                    TEST_SOURCE,
+            },
+        )
     )
 
-else:
+
+    if hold_1_status != 200:
+
+        raise RuntimeError(
+            (
+                "First HOLD failed: "
+                f"{hold_1_status} "
+                f"{hold_1_body}"
+            )
+        )
+
+
+    HOLD_1_ID = (
+        hold_1_body[
+            "id"
+        ]
+    )
+
+
+    hold_ids.append(
+        HOLD_1_ID
+    )
+
+
+    print()
 
     print(
-        "IDEMPOTENCY KEY REUSE: FAIL"
+        "FIRST HOLD CREATED:",
+        HOLD_1_ID,
     )
+
+
+    # =====================================================
+    # 3. 두 번째 Slot HOLD
+    # =====================================================
+
+    hold_2_status, hold_2_body = (
+        post_json(
+
+            (
+                f"{BASE_URL}"
+                f"/slots/{SLOT_2_ID}/hold"
+            ),
+
+            {
+                "source":
+                    TEST_SOURCE,
+            },
+        )
+    )
+
+
+    if hold_2_status != 200:
+
+        raise RuntimeError(
+            (
+                "Second HOLD failed: "
+                f"{hold_2_status} "
+                f"{hold_2_body}"
+            )
+        )
+
+
+    HOLD_2_ID = (
+        hold_2_body[
+            "id"
+        ]
+    )
+
+
+    hold_ids.append(
+        HOLD_2_ID
+    )
+
+
+    print(
+        "SECOND HOLD CREATED:",
+        HOLD_2_ID,
+    )
+
+
+    # =====================================================
+    # 4. 첫 번째 Hold CONFIRM
+    #
+    # 같은 IDEMPOTENCY_KEY를 사용한다.
+    #
+    # 이 요청은 정상 성공해야 한다.
+    # =====================================================
+
+    first_confirm_status, first_confirm_body = (
+        post_json(
+
+            (
+                f"{BASE_URL}"
+                f"/holds/{HOLD_1_ID}/confirm"
+            ),
+
+            {
+                "idempotency_key":
+                    IDEMPOTENCY_KEY,
+            },
+        )
+    )
+
+
+    print()
+
+    print(
+        "========================================"
+    )
+
+    print(
+        "FIRST CONFIRM"
+    )
+
+    print(
+        "========================================"
+    )
+
+    print(
+        "STATUS:",
+        first_confirm_status,
+    )
+
+    print(
+        "BODY:",
+        json.dumps(
+            first_confirm_body,
+            ensure_ascii=False,
+        ),
+    )
+
+
+    # =====================================================
+    # 5. 전혀 다른 Hold에
+    #    동일 Idempotency Key 재사용
+    #
+    # 반드시 409로 막혀야 한다.
+    # =====================================================
+
+    second_confirm_status, second_confirm_body = (
+        post_json(
+
+            (
+                f"{BASE_URL}"
+                f"/holds/{HOLD_2_ID}/confirm"
+            ),
+
+            {
+                "idempotency_key":
+                    IDEMPOTENCY_KEY,
+            },
+        )
+    )
+
+
+    print()
+
+    print(
+        "========================================"
+    )
+
+    print(
+        "SECOND CONFIRM WITH SAME KEY"
+    )
+
+    print(
+        "========================================"
+    )
+
+    print(
+        "STATUS:",
+        second_confirm_status,
+    )
+
+    print(
+        "BODY:",
+        json.dumps(
+            second_confirm_body,
+            ensure_ascii=False,
+        ),
+    )
+
+
+    # =====================================================
+    # 6. PostgreSQL 상태 확인
+    #
+    # 전체 Appointment가 아니라
+    # 이번 테스트 key만 검사한다.
+    # =====================================================
+
+    db = SessionLocal()
+
+    try:
+
+        appointment_count = (
+            db.query(
+                Appointment
+            )
+            .filter(
+                Appointment.idempotency_key
+                == IDEMPOTENCY_KEY
+            )
+            .count()
+        )
+
+
+        appointment = (
+            db.query(
+                Appointment
+            )
+            .filter(
+                Appointment.idempotency_key
+                == IDEMPOTENCY_KEY
+            )
+            .first()
+        )
+
+
+        hold_1 = (
+            db.query(
+                SlotHold
+            )
+            .filter(
+                SlotHold.id
+                == HOLD_1_ID
+            )
+            .first()
+        )
+
+
+        hold_2 = (
+            db.query(
+                SlotHold
+            )
+            .filter(
+                SlotHold.id
+                == HOLD_2_ID
+            )
+            .first()
+        )
+
+
+        slot_1 = (
+            db.query(
+                AppointmentSlot
+            )
+            .filter(
+                AppointmentSlot.id
+                == SLOT_1_ID
+            )
+            .first()
+        )
+
+
+        slot_2 = (
+            db.query(
+                AppointmentSlot
+            )
+            .filter(
+                AppointmentSlot.id
+                == SLOT_2_ID
+            )
+            .first()
+        )
+
+
+        appointment_id = (
+            appointment.id
+            if appointment is not None
+            else None
+        )
+
+
+        appointment_hold_id = (
+            appointment.hold_id
+            if appointment is not None
+            else None
+        )
+
+
+        hold_1_status_db = (
+            hold_1.status
+            if hold_1 is not None
+            else None
+        )
+
+
+        hold_2_status_db = (
+            hold_2.status
+            if hold_2 is not None
+            else None
+        )
+
+
+        slot_1_status_db = (
+            slot_1.status
+            if slot_1 is not None
+            else None
+        )
+
+
+        slot_2_status_db = (
+            slot_2.status
+            if slot_2 is not None
+            else None
+        )
+
+
+    finally:
+
+        db.close()
+
+
+    print()
+
+    print(
+        "========================================"
+    )
+
+    print(
+        "DATABASE RESULT"
+    )
+
+    print(
+        "========================================"
+    )
+
+    print(
+        "TEST APPOINTMENT COUNT:",
+        appointment_count,
+    )
+
+    print(
+        "APPOINTMENT ID:",
+        appointment_id,
+    )
+
+    print(
+        "APPOINTMENT HOLD ID:",
+        appointment_hold_id,
+    )
+
+    print(
+        "FIRST HOLD STATUS:",
+        hold_1_status_db,
+    )
+
+    print(
+        "SECOND HOLD STATUS:",
+        hold_2_status_db,
+    )
+
+    print(
+        "FIRST SLOT STATUS:",
+        slot_1_status_db,
+    )
+
+    print(
+        "SECOND SLOT STATUS:",
+        slot_2_status_db,
+    )
+
+
+    # =====================================================
+    # 7. 두 번째 응답 detail 확인
+    # =====================================================
+
+    second_detail = (
+        second_confirm_body.get(
+            "detail"
+        )
+        if isinstance(
+            second_confirm_body,
+            dict,
+        )
+        else None
+    )
+
+
+    # =====================================================
+    # 8. 최종 PASS / FAIL
+    #
+    # 첫 Hold:
+    # CONFIRMED
+    #
+    # 두 번째 Hold:
+    # 동일 key 때문에 CONFIRM 거부
+    # 따라서 여전히 ACTIVE
+    #
+    # 첫 Slot:
+    # CONFIRMED
+    #
+    # 두 번째 Slot:
+    # HELD
+    # =====================================================
+
+    passed = (
+
+        first_confirm_status
+        == 200
+
+        and
+
+        second_confirm_status
+        == 409
+
+        and
+
+        second_detail
+        ==
+        (
+            "Idempotency key already used "
+            "for another hold"
+        )
+
+        and
+
+        appointment_count
+        == 1
+
+        and
+
+        appointment_hold_id
+        == HOLD_1_ID
+
+        and
+
+        hold_1_status_db
+        == "CONFIRMED"
+
+        and
+
+        hold_2_status_db
+        == "ACTIVE"
+
+        and
+
+        slot_1_status_db
+        == "CONFIRMED"
+
+        and
+
+        slot_2_status_db
+        == "HELD"
+    )
+
+
+    print()
+
+
+    if passed:
+
+        print(
+            "IDEMPOTENCY KEY REUSE: PASS"
+        )
+
+    else:
+
+        print(
+            "IDEMPOTENCY KEY REUSE: FAIL"
+        )
+
+
+# =========================================================
+# 9. 반드시 테스트 데이터 cleanup
+#
+# 테스트가 PASS든 FAIL이든
+# finally에서 이번 테스트 데이터만 제거한다.
+# =========================================================
+
+finally:
+
+    cleanup_db = SessionLocal()
+
+
+    try:
+
+        # -------------------------------------------------
+        # 혹시 이번 Hold들과 연결된
+        # DecisionEvent가 있으면 먼저 제거
+        # -------------------------------------------------
+
+        if hold_ids:
+
+            cleanup_db.query(
+                DecisionEvent
+            ).filter(
+                DecisionEvent.hold_id.in_(
+                    hold_ids
+                )
+            ).delete(
+                synchronize_session=False
+            )
+
+
+        # -------------------------------------------------
+        # 이번 테스트 Key의 Appointment만 제거
+        # -------------------------------------------------
+
+        cleanup_db.query(
+            Appointment
+        ).filter(
+            Appointment.idempotency_key
+            == IDEMPOTENCY_KEY
+        ).delete(
+            synchronize_session=False
+        )
+
+
+        # -------------------------------------------------
+        # 이번 테스트 Hold들만 제거
+        # -------------------------------------------------
+
+        if hold_ids:
+
+            cleanup_db.query(
+                SlotHold
+            ).filter(
+                SlotHold.id.in_(
+                    hold_ids
+                )
+            ).delete(
+                synchronize_session=False
+            )
+
+
+        # -------------------------------------------------
+        # 테스트 Slot 두 개를 원래 사용할 수 있는 상태로 복구
+        #
+        # 단, 다른 Appointment/Hold가 없을 때만.
+        # -------------------------------------------------
+
+        for slot_id in (
+            SLOT_1_ID,
+            SLOT_2_ID,
+        ):
+
+            remaining_appointments = (
+                cleanup_db.query(
+                    Appointment
+                )
+                .filter(
+                    Appointment.slot_id
+                    == slot_id
+                )
+                .count()
+            )
+
+
+            remaining_holds = (
+                cleanup_db.query(
+                    SlotHold
+                )
+                .filter(
+                    SlotHold.slot_id
+                    == slot_id
+                )
+                .count()
+            )
+
+
+            slot = (
+                cleanup_db.query(
+                    AppointmentSlot
+                )
+                .filter(
+                    AppointmentSlot.id
+                    == slot_id
+                )
+                .with_for_update()
+                .first()
+            )
+
+
+            if (
+                slot is not None
+                and
+                remaining_appointments == 0
+                and
+                remaining_holds == 0
+            ):
+
+                slot.status = (
+                    "AVAILABLE"
+                )
+
+
+        cleanup_db.commit()
+
+
+        print()
+
+        print(
+            "TEST DATA CLEANUP: PASS"
+        )
+
+
+    except Exception:
+
+        cleanup_db.rollback()
+
+        raise
+
+
+    finally:
+
+        cleanup_db.close()
