@@ -2,6 +2,7 @@
 
 import {
   useEffect,
+  useRef,
   useState,
 } from "react";
 
@@ -10,228 +11,221 @@ const API_BASE =
   "http://127.0.0.1:8001";
 
 
-// =========================================================
-// Types
-// =========================================================
-
-type CareOptionCandidate = {
+type Candidate = {
   candidate_match_id: number;
-
   provider_id: number;
   provider_name: string;
-
   hospital_id: number;
   hospital_name: string;
   district: string;
-
   offer_id: number;
-
   procedure_code: string;
   procedure_name: string;
-
-  price_min: number | null;
-  price_max: number | null;
-
+  price_min: number;
+  price_max: number;
   earliest_slot_id: number;
   earliest_slot_time: string;
-
   constraint_match_score: number;
-
   budget_status: string;
-
   data_confidence: number;
-
   reasons: string[];
 };
 
 
-type CareOptionsSearchResponse = {
+type CareOptionsResponse = {
   intent_id: number;
-
-  candidates: CareOptionCandidate[];
+  candidates: Candidate[];
 };
 
 
-type SlotHold = {
+type Hold = {
   id: number;
-
   slot_id: number;
-
   source: string;
-
   expires_at: string;
-
   status: string;
 };
 
 
 type Appointment = {
   id: number;
-
   slot_id: number;
-
   hold_id: number;
-
   source: string;
-
   idempotency_key: string;
-
   status: string;
-
   created_at: string;
 };
 
 
-// =========================================================
-// 가격 표시
-// =========================================================
-
-function formatPrice(
-  value: number | null
-) {
-
-  if (value === null) {
-    return "미확인";
-  }
-
-
-  return (
-    `${Math.floor(value / 10000)}만원`
-  );
-}
+type DecisionFeedbackResponse = {
+  id: number;
+  intent_id: number;
+  candidate_match_id: number | null;
+  feedback_type: string;
+  reason_codes: string[];
+  free_text: string | null;
+  source: string;
+  idempotency_key: string;
+};
 
 
-// =========================================================
-// 가격 범위 표시
-// =========================================================
+type SelectionReason =
+  | "PRICE"
+  | "AVAILABILITY"
+  | "LOCATION"
+  | "DATA_CONFIDENCE"
+  | "OTHER";
+
+
+type NoSelectionReason =
+  | "BUDGET_TOO_HIGH"
+  | "TIME_NOT_MATCH"
+  | "LOCATION_NOT_MATCH"
+  | "INSUFFICIENT_INFORMATION"
+  | "OTHER";
+
+
+const SELECTION_REASON_OPTIONS: {
+  code: SelectionReason;
+  label: string;
+}[] = [
+  {
+    code: "PRICE",
+    label: "가격",
+  },
+  {
+    code: "AVAILABILITY",
+    label: "예약 시간",
+  },
+  {
+    code: "LOCATION",
+    label: "위치",
+  },
+  {
+    code: "DATA_CONFIDENCE",
+    label: "정보 신뢰도",
+  },
+  {
+    code: "OTHER",
+    label: "기타",
+  },
+];
+
+
+const NO_SELECTION_REASON_OPTIONS: {
+  code: NoSelectionReason;
+  label: string;
+}[] = [
+  {
+    code: "BUDGET_TOO_HIGH",
+    label: "예산 초과",
+  },
+  {
+    code: "TIME_NOT_MATCH",
+    label: "시간이 안 맞음",
+  },
+  {
+    code: "LOCATION_NOT_MATCH",
+    label: "위치가 안 맞음",
+  },
+  {
+    code: "INSUFFICIENT_INFORMATION",
+    label: "정보가 부족함",
+  },
+  {
+    code: "OTHER",
+    label: "기타",
+  },
+];
+
 
 function formatPriceRange(
-  priceMin: number | null,
-  priceMax: number | null,
+  min: number,
+  max: number,
 ) {
-
-  if (
-    priceMin === null
-    &&
-    priceMax === null
-  ) {
-
-    return "가격 확인 필요";
-  }
-
-
-  if (
-    priceMin !== null
-    &&
-    priceMax === null
-  ) {
-
-    return (
-      `${formatPrice(priceMin)}부터`
-    );
-  }
-
-
   return (
-    `${formatPrice(priceMin)} ~ ${formatPrice(priceMax)}`
+    `${Math.round(min / 10000)}만원`
+    +
+    " ~ "
+    +
+    `${Math.round(max / 10000)}만원`
   );
 }
 
 
-// =========================================================
-// 예약시간 표시
-// =========================================================
-
 function formatSlotTime(
-  value: string
+  value: string,
 ) {
-
   const date =
     new Date(value);
 
-
-  return new Intl.DateTimeFormat(
+  return date.toLocaleString(
     "ko-KR",
     {
       month: "long",
       day: "numeric",
-      weekday: "short",
-      hour: "numeric",
+      hour: "2-digit",
       minute: "2-digit",
-      hour12: true,
     }
-  ).format(date);
+  );
 }
 
-
-// =========================================================
-// HOLD expires_at은 UTC로 저장됨
-// =========================================================
-
-function getUtcTime(
-  value: string
-) {
-
-  const hasTimezone =
-    value.endsWith("Z")
-    ||
-    /[+-]\d\d:\d\d$/.test(value);
-
-
-  const normalized =
-    hasTimezone
-      ? value
-      : `${value}Z`;
-
-
-  return new Date(
-    normalized
-  ).getTime();
-}
-
-
-// =========================================================
-// Budget status 한글 표시
-// =========================================================
 
 function budgetStatusLabel(
-  value: string
+  status: string,
 ) {
-
-  if (value === "WITHIN_BUDGET") {
+  if (
+    status
+    === "WITHIN_BUDGET"
+  ) {
     return "예산 범위 내";
   }
 
-
-  if (value === "PARTIAL_MATCH") {
-    return "예산 일부 일치";
+  if (
+    status
+    === "PARTIAL_MATCH"
+  ) {
+    return "예산 부분 일치";
   }
 
-
-  if (value === "NOT_SPECIFIED") {
-    return "예산 미지정";
-  }
-
-
-  return value;
+  return status;
 }
 
 
-// =========================================================
-// Main
-// =========================================================
+async function readError(
+  response: Response,
+) {
+  try {
+    const data =
+      await response.json();
+
+    return (
+      data.detail
+      ??
+      JSON.stringify(data)
+    );
+  } catch {
+    return (
+      `HTTP ${response.status}`
+    );
+  }
+}
+
 
 export default function Home() {
 
-  // =======================================================
+  // =====================================================
   // Patient Intent
-  // =======================================================
+  // =====================================================
 
   const [
-    query,
-    setQuery,
+    rawQuery,
+    setRawQuery,
   ] = useState(
-    "8월 22일 오후 강남에서 200만원 정도로 스마일 시력교정 검진 가능한 곳 찾아줘"
+    "8월 22일 오후 강남에서 200만원 정도로 "
+    +
+    "스마일 시력교정 검진 가능한 곳 찾아줘"
   );
 
 
@@ -263,13 +257,13 @@ export default function Home() {
     budgetMax,
     setBudgetMax,
   ] = useState(
-    2000000
+    "2000000"
   );
 
 
-  // =======================================================
-  // Search 결과
-  // =======================================================
+  // =====================================================
+  // Search / Transaction
+  // =====================================================
 
   const [
     intentId,
@@ -282,7 +276,7 @@ export default function Home() {
   const [
     candidates,
     setCandidates,
-  ] = useState<CareOptionCandidate[]>(
+  ] = useState<Candidate[]>(
     []
   );
 
@@ -290,19 +284,15 @@ export default function Home() {
   const [
     selectedCandidate,
     setSelectedCandidate,
-  ] = useState<CareOptionCandidate | null>(
+  ] = useState<Candidate | null>(
     null
   );
 
 
-  // =======================================================
-  // Transaction
-  // =======================================================
-
   const [
     hold,
     setHold,
-  ] = useState<SlotHold | null>(
+  ] = useState<Hold | null>(
     null
   );
 
@@ -316,136 +306,225 @@ export default function Home() {
 
 
   const [
-    idempotencyKey,
-    setIdempotencyKey,
-  ] = useState<string | null>(
-    null
-  );
-
-
-  const [
     secondsLeft,
     setSecondsLeft,
-  ] = useState(0);
+  ] = useState(
+    0
+  );
 
 
   const [
     loading,
     setLoading,
-  ] = useState(false);
+  ] = useState(
+    false
+  );
 
 
   const [
     error,
     setError,
-  ] = useState("");
-
-
-  // =======================================================
-  // HOLD countdown
-  // =======================================================
-
-  useEffect(
-    () => {
-
-      if (
-        !hold
-        ||
-        hold.status !== "ACTIVE"
-      ) {
-
-        setSecondsLeft(0);
-
-        return;
-      }
-
-
-      const updateCountdown =
-        () => {
-
-          const remaining =
-            Math.max(
-              0,
-
-              Math.floor(
-                (
-                  getUtcTime(
-                    hold.expires_at
-                  )
-                  -
-                  Date.now()
-                )
-                / 1000
-              )
-            );
-
-
-          setSecondsLeft(
-            remaining
-          );
-        };
-
-
-      updateCountdown();
-
-
-      const timer =
-        window.setInterval(
-          updateCountdown,
-          1000
-        );
-
-
-      return () => {
-
-        window.clearInterval(
-          timer
-        );
-      };
-
-    },
-
-    [hold]
+  ] = useState<string | null>(
+    null
   );
 
 
-  // =======================================================
-  // 1. Care Option Search
-  // =======================================================
+  // =====================================================
+  // Decision Feedback
+  // =====================================================
 
-  async function searchCareOptions() {
+  const [
+    selectionReasons,
+    setSelectionReasons,
+  ] = useState<SelectionReason[]>(
+    []
+  );
+
+
+  const [
+    selectionFreeText,
+    setSelectionFreeText,
+  ] = useState(
+    ""
+  );
+
+
+  const [
+    selectionFeedback,
+    setSelectionFeedback,
+  ] =
+    useState<DecisionFeedbackResponse | null>(
+      null
+    );
+
+
+  const [
+    noSelectionReasons,
+    setNoSelectionReasons,
+  ] =
+    useState<NoSelectionReason[]>(
+      []
+    );
+
+
+  const [
+    noSelectionFreeText,
+    setNoSelectionFreeText,
+  ] = useState(
+    ""
+  );
+
+
+  const [
+    noSelectionFeedback,
+    setNoSelectionFeedback,
+  ] =
+    useState<DecisionFeedbackResponse | null>(
+      null
+    );
+
+
+  const [
+    showNoSelectionFeedback,
+    setShowNoSelectionFeedback,
+  ] = useState(
+    false
+  );
+
+
+  const [
+    feedbackLoading,
+    setFeedbackLoading,
+  ] = useState(
+    false
+  );
+
+
+  const [
+    feedbackError,
+    setFeedbackError,
+  ] = useState<string | null>(
+    null
+  );
+
+
+  // =====================================================
+  // Stable idempotency keys
+  // =====================================================
+
+  const confirmKeyRef =
+    useRef<string | null>(
+      null
+    );
+
+
+  const selectionFeedbackKeyRef =
+    useRef<string | null>(
+      null
+    );
+
+
+  const noSelectionFeedbackKeyRef =
+    useRef<string | null>(
+      null
+    );
+
+
+  // =====================================================
+  // HOLD countdown
+  // =====================================================
+
+  useEffect(() => {
 
     if (
-      hold
-      &&
-      hold.status === "ACTIVE"
-      &&
-      secondsLeft > 0
+      !hold
+      ||
+      hold.status
+      !== "ACTIVE"
     ) {
-
-      setError(
-        "현재 ACTIVE HOLD가 있습니다. 예약을 확정하거나 HOLD가 만료된 뒤 다시 검색해주세요."
-      );
-
+      setSecondsLeft(0);
       return;
     }
 
 
+    function calculate() {
+
+      const expiresAt =
+        new Date(
+          hold!.expires_at
+        ).getTime();
+
+
+      const now =
+        Date.now();
+
+
+      const seconds =
+        Math.max(
+          0,
+          Math.floor(
+            (
+              expiresAt
+              - now
+            )
+            / 1000
+          )
+        );
+
+
+      setSecondsLeft(
+        seconds
+      );
+    }
+
+
+    calculate();
+
+
+    const timer =
+      window.setInterval(
+        calculate,
+        1000
+      );
+
+
+    return () => {
+      window.clearInterval(
+        timer
+      );
+    };
+
+  }, [hold]);
+
+
+  // =====================================================
+  // Search
+  // =====================================================
+
+  async function searchCareOptions() {
+
     setLoading(true);
-
-    setError("");
-
-    setCandidates([]);
+    setError(null);
+    setFeedbackError(null);
 
     setIntentId(null);
-
+    setCandidates([]);
     setSelectedCandidate(null);
-
     setHold(null);
-
     setAppointment(null);
 
-    setIdempotencyKey(null);
+    setSelectionReasons([]);
+    setSelectionFreeText("");
+    setSelectionFeedback(null);
+
+    setNoSelectionReasons([]);
+    setNoSelectionFreeText("");
+    setNoSelectionFeedback(null);
+    setShowNoSelectionFeedback(false);
+
+    confirmKeyRef.current = null;
+    selectionFeedbackKeyRef.current = null;
+    noSelectionFeedbackKeyRef.current = null;
 
 
     try {
@@ -466,8 +545,7 @@ export default function Home() {
                 procedure_code:
                   "VISION_CORRECTION_SMILE",
 
-                district:
-                  district,
+                district,
 
                 preferred_date:
                   preferredDate,
@@ -476,13 +554,17 @@ export default function Home() {
                   timeWindow,
 
                 budget_max:
-                  budgetMax,
+                  budgetMax
+                    ? Number(
+                        budgetMax
+                      )
+                    : null,
 
                 source:
                   "AI_SIMULATOR",
 
                 raw_query:
-                  query,
+                  rawQuery,
 
                 limit:
                   3,
@@ -494,21 +576,17 @@ export default function Home() {
 
       if (!response.ok) {
 
-        const body =
-          await response.json();
-
-
         throw new Error(
-          body.detail
-          ??
-          "후보 검색에 실패했습니다."
+          await readError(
+            response
+          )
         );
       }
 
 
       const data:
-        CareOptionsSearchResponse =
-        await response.json();
+        CareOptionsResponse =
+          await response.json();
 
 
       setIntentId(
@@ -520,36 +598,40 @@ export default function Home() {
         data.candidates
       );
 
-    }
 
-    catch (err) {
+      noSelectionFeedbackKeyRef.current =
+        (
+          "ui-no-selection-"
+          +
+          crypto.randomUUID()
+        );
+
+    } catch (err) {
 
       setError(
         err instanceof Error
           ? err.message
-          : "알 수 없는 오류가 발생했습니다."
+          : "검색 중 오류가 발생했습니다."
       );
 
-    }
-
-    finally {
+    } finally {
 
       setLoading(false);
     }
   }
 
 
-  // =======================================================
-  // 2. Candidate 선택 → HOLD
-  // =======================================================
+  // =====================================================
+  // Candidate Select → HOLD
+  // =====================================================
 
   async function selectCandidate(
-    candidate: CareOptionCandidate
+    candidate: Candidate,
   ) {
 
     setLoading(true);
-
-    setError("");
+    setError(null);
+    setFeedbackError(null);
 
 
     try {
@@ -584,20 +666,15 @@ export default function Home() {
 
       if (!response.ok) {
 
-        const body =
-          await response.json();
-
-
         throw new Error(
-          body.detail
-          ??
-          "슬롯 HOLD에 실패했습니다."
+          await readError(
+            response
+          )
         );
       }
 
 
-      const holdData:
-        SlotHold =
+      const data: Hold =
         await response.json();
 
 
@@ -607,7 +684,7 @@ export default function Home() {
 
 
       setHold(
-        holdData
+        data
       );
 
 
@@ -616,55 +693,81 @@ export default function Home() {
       );
 
 
-      // ---------------------------------------------------
-      // 이 HOLD의 모든 retry에서 같은 key 사용
-      // ---------------------------------------------------
-
-      setIdempotencyKey(
-        crypto.randomUUID()
+      setSelectionReasons(
+        []
       );
 
-    }
 
-    catch (err) {
+      setSelectionFreeText(
+        ""
+      );
+
+
+      setSelectionFeedback(
+        null
+      );
+
+
+      setShowNoSelectionFeedback(
+        false
+      );
+
+
+      confirmKeyRef.current =
+        null;
+
+
+      selectionFeedbackKeyRef.current =
+        (
+          "ui-selection-"
+          +
+          crypto.randomUUID()
+        );
+
+    } catch (err) {
 
       setError(
         err instanceof Error
           ? err.message
-          : "알 수 없는 오류가 발생했습니다."
+          : "후보 선택 중 오류가 발생했습니다."
       );
 
-    }
-
-    finally {
+    } finally {
 
       setLoading(false);
     }
   }
 
 
-  // =======================================================
-  // 3. CONFIRM
-  // =======================================================
+  // =====================================================
+  // HOLD → CONFIRM
+  // =====================================================
 
   async function confirmAppointment() {
 
-    if (
-      !hold
-      ||
-      !idempotencyKey
-    ) {
-
+    if (!hold) {
       return;
     }
 
 
     setLoading(true);
-
-    setError("");
+    setError(null);
 
 
     try {
+
+      if (
+        !confirmKeyRef.current
+      ) {
+
+        confirmKeyRef.current =
+          (
+            "ui-confirm-"
+            +
+            crypto.randomUUID()
+          );
+      }
+
 
       const response =
         await fetch(
@@ -684,7 +787,7 @@ export default function Home() {
             body: JSON.stringify(
               {
                 idempotency_key:
-                  idempotencyKey,
+                  confirmKeyRef.current,
               }
             ),
           }
@@ -693,21 +796,17 @@ export default function Home() {
 
       if (!response.ok) {
 
-        const body =
-          await response.json();
-
-
         throw new Error(
-          body.detail
-          ??
-          "예약 확정에 실패했습니다."
+          await readError(
+            response
+          )
         );
       }
 
 
       const data:
         Appointment =
-        await response.json();
+          await response.json();
 
 
       setAppointment(
@@ -716,42 +815,311 @@ export default function Home() {
 
 
       setHold(
-        currentHold =>
-          currentHold
+        previous =>
+          previous
             ? {
-                ...currentHold,
-                status: "CONFIRMED",
+                ...previous,
+                status:
+                  "CONFIRMED",
               }
-            : null
+            : previous
       );
 
-
-      setSecondsLeft(
-        0
-      );
-
-    }
-
-    catch (err) {
+    } catch (err) {
 
       setError(
         err instanceof Error
           ? err.message
-          : "알 수 없는 오류가 발생했습니다."
+          : "예약 확정 중 오류가 발생했습니다."
       );
 
-    }
-
-    finally {
+    } finally {
 
       setLoading(false);
     }
   }
 
 
-  // =======================================================
+  // =====================================================
+  // Selection Feedback reason toggle
+  // =====================================================
+
+  function toggleSelectionReason(
+    reason: SelectionReason,
+  ) {
+
+    setSelectionReasons(
+      previous =>
+        previous.includes(
+          reason
+        )
+          ? previous.filter(
+              item =>
+                item !== reason
+            )
+          : [
+              ...previous,
+              reason,
+            ]
+    );
+  }
+
+
+  // =====================================================
+  // No-selection Feedback reason toggle
+  // =====================================================
+
+  function toggleNoSelectionReason(
+    reason:
+      NoSelectionReason,
+  ) {
+
+    setNoSelectionReasons(
+      previous =>
+        previous.includes(
+          reason
+        )
+          ? previous.filter(
+              item =>
+                item !== reason
+            )
+          : [
+              ...previous,
+              reason,
+            ]
+    );
+  }
+
+
+  // =====================================================
+  // Selection Feedback POST
+  // =====================================================
+
+  async function submitSelectionFeedback() {
+
+    if (
+      intentId === null
+      ||
+      selectedCandidate === null
+      ||
+      selectionReasons.length === 0
+    ) {
+      return;
+    }
+
+
+    setFeedbackLoading(true);
+    setFeedbackError(null);
+
+
+    try {
+
+      if (
+        !selectionFeedbackKeyRef.current
+      ) {
+
+        selectionFeedbackKeyRef.current =
+          (
+            "ui-selection-"
+            +
+            crypto.randomUUID()
+          );
+      }
+
+
+      const response =
+        await fetch(
+          (
+            `${API_BASE}`
+            +
+            "/decision-feedback/selection"
+          ),
+          {
+            method: "POST",
+
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
+
+            body: JSON.stringify(
+              {
+                intent_id:
+                  intentId,
+
+                candidate_match_id:
+                  selectedCandidate
+                    .candidate_match_id,
+
+                reason_codes:
+                  selectionReasons,
+
+                free_text:
+                  selectionFreeText
+                    .trim()
+                  ||
+                  null,
+
+                source:
+                  "AI_SIMULATOR",
+
+                idempotency_key:
+                  selectionFeedbackKeyRef
+                    .current,
+              }
+            ),
+          }
+        );
+
+
+      if (!response.ok) {
+
+        throw new Error(
+          await readError(
+            response
+          )
+        );
+      }
+
+
+      const data:
+        DecisionFeedbackResponse =
+          await response.json();
+
+
+      setSelectionFeedback(
+        data
+      );
+
+    } catch (err) {
+
+      setFeedbackError(
+        err instanceof Error
+          ? err.message
+          : "선택 이유 저장 중 오류가 발생했습니다."
+      );
+
+    } finally {
+
+      setFeedbackLoading(false);
+    }
+  }
+
+
+  // =====================================================
+  // No-selection Feedback POST
+  // =====================================================
+
+  async function submitNoSelectionFeedback() {
+
+    if (
+      intentId === null
+      ||
+      selectedCandidate !== null
+      ||
+      noSelectionReasons.length === 0
+    ) {
+      return;
+    }
+
+
+    setFeedbackLoading(true);
+    setFeedbackError(null);
+
+
+    try {
+
+      if (
+        !noSelectionFeedbackKeyRef.current
+      ) {
+
+        noSelectionFeedbackKeyRef.current =
+          (
+            "ui-no-selection-"
+            +
+            crypto.randomUUID()
+          );
+      }
+
+
+      const response =
+        await fetch(
+          (
+            `${API_BASE}`
+            +
+            "/decision-feedback/no-selection"
+          ),
+          {
+            method: "POST",
+
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
+
+            body: JSON.stringify(
+              {
+                intent_id:
+                  intentId,
+
+                reason_codes:
+                  noSelectionReasons,
+
+                free_text:
+                  noSelectionFreeText
+                    .trim()
+                  ||
+                  null,
+
+                source:
+                  "AI_SIMULATOR",
+
+                idempotency_key:
+                  noSelectionFeedbackKeyRef
+                    .current,
+              }
+            ),
+          }
+        );
+
+
+      if (!response.ok) {
+
+        throw new Error(
+          await readError(
+            response
+          )
+        );
+      }
+
+
+      const data:
+        DecisionFeedbackResponse =
+          await response.json();
+
+
+      setNoSelectionFeedback(
+        data
+      );
+
+    } catch (err) {
+
+      setFeedbackError(
+        err instanceof Error
+          ? err.message
+          : "비선택 이유 저장 중 오류가 발생했습니다."
+      );
+
+    } finally {
+
+      setFeedbackLoading(false);
+    }
+  }
+
+
+  // =====================================================
   // UI
-  // =======================================================
+  // =====================================================
 
   return (
 
@@ -759,9 +1127,7 @@ export default function Home() {
       className="
         min-h-screen
         bg-slate-50
-        px-6
-        py-10
-        text-slate-900
+        text-slate-950
       "
     >
 
@@ -769,64 +1135,95 @@ export default function Home() {
         className="
           mx-auto
           max-w-7xl
+          px-6
+          py-10
         "
       >
 
         {/* =================================================
-            Header
+            HEADER
         ================================================= */}
 
-        <header
+        <div
           className="
-            mb-9
+            mb-8
+            flex
+            flex-wrap
+            items-start
+            justify-between
+            gap-4
           "
         >
 
-          <div
-            className="
-              mb-3
-              text-sm
-              font-bold
-              tracking-wide
-              text-blue-600
-            "
-          >
-            MODOODOC EXECUTABLE DECISION NETWORK
+          <div>
+
+            <div
+              className="
+                text-xs
+                font-bold
+                uppercase
+                tracking-[0.18em]
+                text-slate-400
+              "
+            >
+              MODOODOC EXECUTABLE DECISION NETWORK
+            </div>
+
+
+            <h1
+              className="
+                mt-2
+                text-4xl
+                font-black
+                tracking-tight
+              "
+            >
+              AI Care Decision Simulator
+            </h1>
+
+
+            <p
+              className="
+                mt-3
+                max-w-3xl
+                text-sm
+                leading-6
+                text-slate-500
+              "
+            >
+              환자의 자연어 요청을 canonical healthcare data,
+              실제 availability, transaction graph와 연결합니다.
+            </p>
+
           </div>
 
 
-          <h1
+          <a
+            href="/analytics"
             className="
-              text-4xl
+              rounded-xl
+              border
+              border-slate-200
+              bg-white
+              px-4
+              py-3
+              text-sm
               font-bold
-              tracking-tight
+              shadow-sm
+              hover:bg-slate-50
             "
           >
-            AI Care Decision Simulator
-          </h1>
+            Decision Analytics →
+          </a>
 
-
-          <p
-            className="
-              mt-4
-              max-w-3xl
-              text-slate-600
-            "
-          >
-            환자의 조건을 canonical intent로 변환하고,
-            정규화된 병원 Offer와 실제 Availability를
-            비교한 뒤 선택된 후보를 안전하게
-            HOLD → CONFIRM하는 프로토타입입니다.
-          </p>
-
-        </header>
+        </div>
 
 
         <div
           className="
             grid
             gap-6
-            xl:grid-cols-[1.15fr_0.85fr]
+            lg:grid-cols-[minmax(0,1fr)_360px]
           "
         >
 
@@ -834,288 +1231,207 @@ export default function Home() {
               LEFT
           ================================================= */}
 
-          <section
-            className="
-              rounded-2xl
-              border
-              border-slate-200
-              bg-white
-              p-6
-              shadow-sm
-            "
-          >
+          <section>
 
-            <h2
-              className="
-                text-xl
-                font-bold
-              "
-            >
-              Patient Intent
-            </h2>
-
-
-            <p
-              className="
-                mt-1
-                text-sm
-                text-slate-500
-              "
-            >
-              현재 자연어 자체를 LLM이 파싱하는 단계는
-              아직 연결하지 않았으며, 아래 구조화 조건과
-              원문을 함께 backend에 전달합니다.
-            </p>
-
-
-            {/* QUERY */}
-
-            <textarea
-              value={query}
-
-              onChange={
-                event =>
-                  setQuery(
-                    event.target.value
-                  )
-              }
-
-              className="
-                mt-5
-                min-h-24
-                w-full
-                resize-none
-                rounded-xl
-                border
-                border-slate-300
-                p-4
-                outline-none
-                focus:border-blue-500
-              "
-            />
-
-
-            {/* CONSTRAINTS */}
+            {/* ==============================================
+                PATIENT INTENT
+            ============================================== */}
 
             <div
               className="
-                mt-4
-                grid
-                gap-3
-                md:grid-cols-2
+                rounded-2xl
+                border
+                border-slate-200
+                bg-white
+                p-6
+                shadow-sm
               "
             >
 
-              <label
+              <div
                 className="
-                  text-sm
-                  font-semibold
+                  text-xs
+                  font-bold
+                  uppercase
+                  tracking-wide
+                  text-slate-400
                 "
               >
-                지역
-
-                <input
-                  value={district}
-
-                  onChange={
-                    event =>
-                      setDistrict(
-                        event.target.value
-                      )
-                  }
-
-                  className="
-                    mt-2
-                    w-full
-                    rounded-xl
-                    border
-                    border-slate-300
-                    px-4
-                    py-3
-                    font-normal
-                  "
-                />
-
-              </label>
+                Patient Intent
+              </div>
 
 
-              <label
+              <h2
                 className="
-                  text-sm
-                  font-semibold
+                  mt-1
+                  text-xl
+                  font-bold
                 "
               >
-                날짜
-
-                <input
-                  type="date"
-
-                  value={preferredDate}
-
-                  onChange={
-                    event =>
-                      setPreferredDate(
-                        event.target.value
-                      )
-                  }
-
-                  className="
-                    mt-2
-                    w-full
-                    rounded-xl
-                    border
-                    border-slate-300
-                    px-4
-                    py-3
-                    font-normal
-                  "
-                />
-
-              </label>
+                원하는 진료 조건
+              </h2>
 
 
-              <label
+              <div
                 className="
-                  text-sm
-                  font-semibold
+                  mt-5
+                  space-y-4
                 "
               >
-                시간대
 
-                <select
-                  value={timeWindow}
+                <div>
 
-                  onChange={
-                    event =>
-                      setTimeWindow(
-                        event.target.value
-                      )
-                  }
-
-                  className="
-                    mt-2
-                    w-full
-                    rounded-xl
-                    border
-                    border-slate-300
-                    px-4
-                    py-3
-                    font-normal
-                  "
-                >
-                  <option value="MORNING">
-                    오전
-                  </option>
-
-                  <option value="AFTERNOON">
-                    오후
-                  </option>
-
-                  <option value="EVENING">
-                    저녁
-                  </option>
-
-                  <option value="ANY">
-                    상관없음
-                  </option>
-                </select>
-
-              </label>
+                  <label
+                    className="
+                      text-sm
+                      font-bold
+                    "
+                  >
+                    자연어 요청
+                  </label>
 
 
-              <label
-                className="
-                  text-sm
-                  font-semibold
-                "
-              >
-                최대 예산
+                  <textarea
+                    value={rawQuery}
 
-                <input
-                  type="number"
-
-                  value={budgetMax}
-
-                  onChange={
-                    event =>
-                      setBudgetMax(
-                        Number(
+                    onChange={
+                      event =>
+                        setRawQuery(
                           event.target.value
                         )
-                      )
+                    }
+
+                    className="
+                      mt-2
+                      min-h-24
+                      w-full
+                      rounded-xl
+                      border
+                      border-slate-200
+                      p-3
+                      outline-none
+                      focus:border-blue-500
+                    "
+                  />
+
+                </div>
+
+
+                <div
+                  className="
+                    grid
+                    gap-3
+                    sm:grid-cols-2
+                  "
+                >
+
+                  <IntentInput
+                    label="지역"
+                    value={district}
+                    onChange={setDistrict}
+                  />
+
+
+                  <IntentInput
+                    label="날짜"
+                    type="date"
+                    value={preferredDate}
+                    onChange={setPreferredDate}
+                  />
+
+
+                  <div>
+
+                    <label
+                      className="
+                        text-sm
+                        font-bold
+                      "
+                    >
+                      시간대
+                    </label>
+
+
+                    <select
+                      value={timeWindow}
+
+                      onChange={
+                        event =>
+                          setTimeWindow(
+                            event.target.value
+                          )
+                      }
+
+                      className="
+                        mt-2
+                        w-full
+                        rounded-xl
+                        border
+                        border-slate-200
+                        bg-white
+                        p-3
+                      "
+                    >
+                      <option value="MORNING">
+                        오전
+                      </option>
+
+                      <option value="AFTERNOON">
+                        오후
+                      </option>
+
+                      <option value="EVENING">
+                        저녁
+                      </option>
+
+                      <option value="ANY">
+                        시간 무관
+                      </option>
+                    </select>
+
+                  </div>
+
+
+                  <IntentInput
+                    label="최대 예산"
+                    type="number"
+                    value={budgetMax}
+                    onChange={setBudgetMax}
+                  />
+
+                </div>
+
+
+                <button
+                  onClick={
+                    searchCareOptions
                   }
 
+                  disabled={loading}
+
                   className="
-                    mt-2
                     w-full
                     rounded-xl
-                    border
-                    border-slate-300
+                    bg-slate-950
                     px-4
                     py-3
-                    font-normal
+                    font-bold
+                    text-white
+                    hover:bg-slate-800
+                    disabled:opacity-40
                   "
-                />
+                >
+                  {
+                    loading
+                      ? "처리 중..."
+                      : "실행 가능한 후보 찾기"
+                  }
+                </button>
 
-              </label>
+              </div>
 
             </div>
 
-
-            <button
-              onClick={
-                searchCareOptions
-              }
-
-              disabled={loading}
-
-              className="
-                mt-5
-                w-full
-                rounded-xl
-                bg-slate-950
-                px-5
-                py-3
-                font-bold
-                text-white
-                transition
-                hover:bg-slate-800
-                disabled:opacity-50
-              "
-            >
-              {
-                loading
-                  ? "처리 중..."
-                  : "조건에 맞는 실행 가능한 후보 찾기"
-              }
-            </button>
-
-
-            {/* INTENT RESULT */}
-
-            {
-              intentId !== null
-              &&
-              (
-                <div
-                  className="
-                    mt-5
-                    rounded-xl
-                    bg-blue-50
-                    p-4
-                    text-sm
-                    text-blue-900
-                  "
-                >
-                  PatientIntent #{intentId} 생성
-                  · 입력 지역 "{district}"는 backend의
-                  Intent Normalization을 거쳐 검색됩니다.
-                </div>
-              )
-            }
-
-
-            {/* ERROR */}
 
             {
               error
@@ -1123,8 +1439,10 @@ export default function Home() {
               (
                 <div
                   className="
-                    mt-5
+                    mt-4
                     rounded-xl
+                    border
+                    border-red-200
                     bg-red-50
                     p-4
                     text-sm
@@ -1267,8 +1585,6 @@ export default function Home() {
                                         "
                                       >
 
-                                        {/* RANK */}
-
                                         <div
                                           className="
                                             flex
@@ -1330,7 +1646,9 @@ export default function Home() {
                                                   candidate
                                                     .provider_name
                                                 }
+
                                                 {" · "}
+
                                                 {
                                                   candidate
                                                     .procedure_name
@@ -1360,8 +1678,6 @@ export default function Home() {
                                           </div>
 
 
-                                          {/* CORE DATA */}
-
                                           <div
                                             className="
                                               mt-4
@@ -1371,107 +1687,39 @@ export default function Home() {
                                             "
                                           >
 
-                                            <div
-                                              className="
-                                                rounded-xl
-                                                bg-slate-50
-                                                p-3
-                                              "
-                                            >
-                                              <div
-                                                className="
-                                                  text-xs
-                                                  text-slate-400
-                                                "
-                                              >
-                                                예상 가격
-                                              </div>
-
-                                              <div
-                                                className="
-                                                  mt-1
-                                                  font-bold
-                                                "
-                                              >
-                                                {
-                                                  formatPriceRange(
-                                                    candidate
-                                                      .price_min,
-
-                                                    candidate
-                                                      .price_max,
-                                                  )
-                                                }
-                                              </div>
-                                            </div>
+                                            <InfoBox
+                                              label="예상 가격"
+                                              value={
+                                                formatPriceRange(
+                                                  candidate.price_min,
+                                                  candidate.price_max
+                                                )
+                                              }
+                                            />
 
 
-                                            <div
-                                              className="
-                                                rounded-xl
-                                                bg-slate-50
-                                                p-3
-                                              "
-                                            >
-                                              <div
-                                                className="
-                                                  text-xs
-                                                  text-slate-400
-                                                "
-                                              >
-                                                가장 빠른 슬롯
-                                              </div>
-
-                                              <div
-                                                className="
-                                                  mt-1
-                                                  font-bold
-                                                "
-                                              >
-                                                {
-                                                  formatSlotTime(
-                                                    candidate
-                                                      .earliest_slot_time
-                                                  )
-                                                }
-                                              </div>
-                                            </div>
-
-
-                                            <div
-                                              className="
-                                                rounded-xl
-                                                bg-slate-50
-                                                p-3
-                                              "
-                                            >
-                                              <div
-                                                className="
-                                                  text-xs
-                                                  text-slate-400
-                                                "
-                                              >
-                                                데이터 Confidence
-                                              </div>
-
-                                              <div
-                                                className="
-                                                  mt-1
-                                                  font-bold
-                                                "
-                                              >
-                                                {
+                                            <InfoBox
+                                              label="가장 빠른 슬롯"
+                                              value={
+                                                formatSlotTime(
                                                   candidate
-                                                    .data_confidence
-                                                    .toFixed(2)
-                                                }
-                                              </div>
-                                            </div>
+                                                    .earliest_slot_time
+                                                )
+                                              }
+                                            />
+
+
+                                            <InfoBox
+                                              label="데이터 Confidence"
+                                              value={
+                                                candidate
+                                                  .data_confidence
+                                                  .toFixed(2)
+                                              }
+                                            />
 
                                           </div>
 
-
-                                          {/* BUDGET */}
 
                                           <div
                                             className="
@@ -1510,8 +1758,6 @@ export default function Home() {
 
                                           </div>
 
-
-                                          {/* REASONS */}
 
                                           <div
                                             className="
@@ -1562,8 +1808,6 @@ export default function Home() {
 
                                           </div>
 
-
-                                          {/* SELECT */}
 
                                           <button
                                             onClick={
@@ -1622,6 +1866,417 @@ export default function Home() {
                         )
                   }
 
+
+                  {/* =============================================
+                      NO-SELECTION FEEDBACK
+                  ============================================= */}
+
+                  {
+                    candidates.length > 0
+                    &&
+                    selectedCandidate === null
+                    &&
+                    (
+                      <div
+                        className="
+                          mt-5
+                          rounded-2xl
+                          border
+                          border-dashed
+                          border-slate-300
+                          bg-white
+                          p-5
+                        "
+                      >
+
+                        {
+                          noSelectionFeedback
+                            ? (
+                                <FeedbackSaved
+                                  id={
+                                    noSelectionFeedback.id
+                                  }
+                                  text="비선택 이유가 저장되었습니다."
+                                />
+                              )
+
+                            : (
+                                <>
+
+                                  <button
+                                    onClick={
+                                      () =>
+                                        setShowNoSelectionFeedback(
+                                          previous =>
+                                            !previous
+                                        )
+                                    }
+
+                                    className="
+                                      text-sm
+                                      font-bold
+                                      text-slate-700
+                                      underline
+                                      underline-offset-4
+                                    "
+                                  >
+                                    마음에 드는 후보가 없나요?
+                                  </button>
+
+
+                                  {
+                                    showNoSelectionFeedback
+                                    &&
+                                    (
+                                      <div
+                                        className="
+                                          mt-4
+                                        "
+                                      >
+
+                                        <h3
+                                          className="
+                                            font-bold
+                                          "
+                                        >
+                                          왜 아무 후보도 선택하지 않았나요?
+                                        </h3>
+
+
+                                        <p
+                                          className="
+                                            mt-1
+                                            text-xs
+                                            text-slate-500
+                                          "
+                                        >
+                                          실제 사용자 응답과
+                                          시스템이 관측한 Loss Signal을
+                                          분리해서 저장합니다.
+                                        </p>
+
+
+                                        <div
+                                          className="
+                                            mt-4
+                                            flex
+                                            flex-wrap
+                                            gap-2
+                                          "
+                                        >
+                                          {
+                                            NO_SELECTION_REASON_OPTIONS
+                                              .map(
+                                                option => (
+
+                                                  <ReasonChip
+                                                    key={
+                                                      option.code
+                                                    }
+
+                                                    selected={
+                                                      noSelectionReasons
+                                                        .includes(
+                                                          option.code
+                                                        )
+                                                    }
+
+                                                    label={
+                                                      option.label
+                                                    }
+
+                                                    onClick={
+                                                      () =>
+                                                        toggleNoSelectionReason(
+                                                          option.code
+                                                        )
+                                                    }
+                                                  />
+
+                                                )
+                                              )
+                                          }
+                                        </div>
+
+
+                                        <textarea
+                                          value={
+                                            noSelectionFreeText
+                                          }
+
+                                          onChange={
+                                            event =>
+                                              setNoSelectionFreeText(
+                                                event.target.value
+                                              )
+                                          }
+
+                                          placeholder="추가로 알려주실 내용이 있다면 적어주세요."
+
+                                          className="
+                                            mt-4
+                                            min-h-20
+                                            w-full
+                                            rounded-xl
+                                            border
+                                            border-slate-200
+                                            p-3
+                                            text-sm
+                                          "
+                                        />
+
+
+                                        <button
+                                          onClick={
+                                            submitNoSelectionFeedback
+                                          }
+
+                                          disabled={
+                                            feedbackLoading
+                                            ||
+                                            noSelectionReasons
+                                              .length
+                                            === 0
+                                          }
+
+                                          className="
+                                            mt-3
+                                            w-full
+                                            rounded-xl
+                                            bg-slate-800
+                                            px-4
+                                            py-3
+                                            text-sm
+                                            font-bold
+                                            text-white
+                                            disabled:opacity-40
+                                          "
+                                        >
+                                          비선택 이유 저장
+                                        </button>
+
+                                      </div>
+                                    )
+                                  }
+
+                                </>
+                              )
+                        }
+
+                      </div>
+                    )
+                  }
+
+                </div>
+              )
+            }
+
+
+            {/* =================================================
+                SELECTION FEEDBACK
+            ================================================= */}
+
+            {
+              selectedCandidate
+              &&
+              intentId !== null
+              &&
+              (
+                <div
+                  className="
+                    mt-6
+                    rounded-2xl
+                    border
+                    border-blue-200
+                    bg-blue-50
+                    p-6
+                  "
+                >
+
+                  <div
+                    className="
+                      text-xs
+                      font-bold
+                      uppercase
+                      tracking-wide
+                      text-blue-500
+                    "
+                  >
+                    DECISION FEEDBACK
+                  </div>
+
+
+                  {
+                    selectionFeedback
+                      ? (
+                          <FeedbackSaved
+                            id={
+                              selectionFeedback.id
+                            }
+                            text="선택 이유가 저장되었습니다."
+                          />
+                        )
+
+                      : (
+                          <>
+
+                            <h2
+                              className="
+                                mt-2
+                                text-lg
+                                font-bold
+                              "
+                            >
+                              왜 이 후보를 선택했나요?
+                            </h2>
+
+
+                            <p
+                              className="
+                                mt-1
+                                text-sm
+                                text-slate-600
+                              "
+                            >
+                              {
+                                selectedCandidate
+                                  .hospital_name
+                              }
+                              을 선택한 이유를 알려주세요.
+                              여러 개 선택할 수 있습니다.
+                            </p>
+
+
+                            <div
+                              className="
+                                mt-4
+                                flex
+                                flex-wrap
+                                gap-2
+                              "
+                            >
+                              {
+                                SELECTION_REASON_OPTIONS
+                                  .map(
+                                    option => (
+
+                                      <ReasonChip
+                                        key={
+                                          option.code
+                                        }
+
+                                        selected={
+                                          selectionReasons
+                                            .includes(
+                                              option.code
+                                            )
+                                        }
+
+                                        label={
+                                          option.label
+                                        }
+
+                                        onClick={
+                                          () =>
+                                            toggleSelectionReason(
+                                              option.code
+                                            )
+                                        }
+                                      />
+
+                                    )
+                                  )
+                              }
+                            </div>
+
+
+                            <textarea
+                              value={
+                                selectionFreeText
+                              }
+
+                              onChange={
+                                event =>
+                                  setSelectionFreeText(
+                                    event.target.value
+                                  )
+                              }
+
+                              placeholder="예: 예산 안이고 원하는 시간이 있어서 선택했어요."
+
+                              className="
+                                mt-4
+                                min-h-20
+                                w-full
+                                rounded-xl
+                                border
+                                border-blue-200
+                                bg-white
+                                p-3
+                                text-sm
+                              "
+                            />
+
+
+                            <button
+                              onClick={
+                                submitSelectionFeedback
+                              }
+
+                              disabled={
+                                feedbackLoading
+                                ||
+                                selectionReasons
+                                  .length
+                                === 0
+                              }
+
+                              className="
+                                mt-3
+                                w-full
+                                rounded-xl
+                                bg-blue-600
+                                px-4
+                                py-3
+                                font-bold
+                                text-white
+                                hover:bg-blue-500
+                                disabled:opacity-40
+                              "
+                            >
+                              {
+                                feedbackLoading
+                                  ? "저장 중..."
+                                  : "선택 이유 저장"
+                              }
+                            </button>
+
+                          </>
+                        )
+                  }
+
+                </div>
+              )
+            }
+
+
+            {
+              feedbackError
+              &&
+              (
+                <div
+                  className="
+                    mt-4
+                    rounded-xl
+                    border
+                    border-red-200
+                    bg-red-50
+                    p-4
+                    text-sm
+                    text-red-700
+                  "
+                >
+                  {feedbackError}
                 </div>
               )
             }
@@ -1630,7 +2285,7 @@ export default function Home() {
 
 
           {/* =================================================
-              RIGHT — TRANSACTION
+              RIGHT — TRANSACTION GRAPH
           ================================================= */}
 
           <aside
@@ -1667,103 +2322,30 @@ export default function Home() {
             </p>
 
 
-            {/* SHOWN */}
-
-            <div
-              className="
-                mt-6
-                rounded-xl
-                border
-                border-slate-200
-                p-4
-              "
+            <TransactionStep
+              step="STEP 1"
+              title="SHOWN"
             >
-
-              <div
-                className="
-                  text-xs
-                  font-bold
-                  text-slate-400
-                "
-              >
-                STEP 1
-              </div>
-
-
-              <div
-                className="
-                  mt-1
-                  font-bold
-                "
-              >
-                SHOWN
-              </div>
+              {
+                intentId
+                  ? (
+                      `${candidates.length}개의 후보를 PatientIntent #${intentId}에 표시`
+                    )
+                  : (
+                      "아직 후보 검색 전입니다."
+                    )
+              }
+            </TransactionStep>
 
 
-              <div
-                className="
-                  mt-2
-                  text-sm
-                  text-slate-600
-                "
-              >
-                {
-                  intentId
-                    ? (
-                        `${candidates.length}개의 후보를 PatientIntent #${intentId}에 표시`
-                      )
-                    : (
-                        "아직 후보 검색 전입니다."
-                      )
-                }
-              </div>
-
-            </div>
-
-
-            {/* SELECTED */}
-
-            <div
-              className="
-                mt-3
-                rounded-xl
-                border
-                border-slate-200
-                p-4
-              "
+            <TransactionStep
+              step="STEP 2"
+              title="SELECTED"
             >
-
-              <div
-                className="
-                  text-xs
-                  font-bold
-                  text-slate-400
-                "
-              >
-                STEP 2
-              </div>
-
-
-              <div
-                className="
-                  mt-1
-                  font-bold
-                "
-              >
-                SELECTED
-              </div>
-
-
               {
                 selectedCandidate
                   ? (
-                      <div
-                        className="
-                          mt-2
-                          text-sm
-                          text-slate-600
-                        "
-                      >
+                      <>
                         Candidate #
                         {
                           selectedCandidate
@@ -1783,26 +2365,15 @@ export default function Home() {
                           selectedCandidate
                             .provider_name
                         }
-                      </div>
+                      </>
                     )
 
                   : (
-                      <div
-                        className="
-                          mt-2
-                          text-sm
-                          text-slate-400
-                        "
-                      >
-                        아직 선택된 후보가 없습니다.
-                      </div>
+                      "아직 선택된 후보가 없습니다."
                     )
               }
+            </TransactionStep>
 
-            </div>
-
-
-            {/* HOLD */}
 
             <div
               className="
@@ -1814,25 +2385,10 @@ export default function Home() {
               "
             >
 
-              <div
-                className="
-                  text-xs
-                  font-bold
-                  text-slate-400
-                "
-              >
-                STEP 3
-              </div>
-
-
-              <div
-                className="
-                  mt-1
-                  font-bold
-                "
-              >
-                HELD
-              </div>
+              <StepHeader
+                step="STEP 3"
+                title="HELD"
+              />
 
 
               {
@@ -1856,7 +2412,8 @@ export default function Home() {
 
 
                         {
-                          hold.status === "ACTIVE"
+                          hold.status
+                          === "ACTIVE"
                             ? (
                                 <>
                                   <div
@@ -1868,13 +2425,15 @@ export default function Home() {
                                   >
                                     {
                                       Math.floor(
-                                        secondsLeft / 60
+                                        secondsLeft
+                                        / 60
                                       )
                                     }
                                     :
                                     {
                                       String(
-                                        secondsLeft % 60
+                                        secondsLeft
+                                        % 60
                                       ).padStart(
                                         2,
                                         "0"
@@ -1894,7 +2453,6 @@ export default function Home() {
                                   </div>
                                 </>
                               )
-
                             : (
                                 <div
                                   className="
@@ -1910,7 +2468,6 @@ export default function Home() {
 
                       </div>
                     )
-
                   : (
                       <div
                         className="
@@ -1927,8 +2484,6 @@ export default function Home() {
             </div>
 
 
-            {/* CONFIRMED */}
-
             <div
               className="
                 mt-3
@@ -1939,25 +2494,10 @@ export default function Home() {
               "
             >
 
-              <div
-                className="
-                  text-xs
-                  font-bold
-                  text-slate-400
-                "
-              >
-                STEP 4
-              </div>
-
-
-              <div
-                className="
-                  mt-1
-                  font-bold
-                "
-              >
-                CONFIRMED
-              </div>
+              <StepHeader
+                step="STEP 4"
+                title="CONFIRMED"
+              />
 
 
               {
@@ -1991,7 +2531,6 @@ export default function Home() {
                             text-slate-600
                           "
                         >
-
                           <div>
                             Appointment #{appointment.id}
                           </div>
@@ -2003,7 +2542,6 @@ export default function Home() {
                           <div>
                             Status: {appointment.status}
                           </div>
-
                         </div>
 
                       </div>
@@ -2018,7 +2556,8 @@ export default function Home() {
                         disabled={
                           !hold
                           ||
-                          hold.status !== "ACTIVE"
+                          hold.status
+                          !== "ACTIVE"
                           ||
                           secondsLeft <= 0
                           ||
@@ -2047,7 +2586,72 @@ export default function Home() {
             </div>
 
 
-            {/* ARCHITECTURE */}
+            {/* =================================================
+                FEEDBACK LAYER
+            ================================================= */}
+
+            <div
+              className="
+                mt-3
+                rounded-xl
+                border
+                border-purple-200
+                bg-purple-50
+                p-4
+              "
+            >
+
+              <div
+                className="
+                  text-xs
+                  font-bold
+                  text-purple-500
+                "
+              >
+                STEP 5
+              </div>
+
+
+              <div
+                className="
+                  mt-1
+                  font-bold
+                "
+              >
+                DECISION FEEDBACK
+              </div>
+
+
+              <div
+                className="
+                  mt-2
+                  text-sm
+                  text-slate-600
+                "
+              >
+                {
+                  selectionFeedback
+                    ? (
+                        `Selection Feedback #${selectionFeedback.id} 저장 완료`
+                      )
+
+                    : noSelectionFeedback
+                      ? (
+                          `No-Selection Feedback #${noSelectionFeedback.id} 저장 완료`
+                        )
+
+                      : (
+                          "사용자가 직접 밝힌 선택·비선택 이유를 기록합니다."
+                        )
+                }
+              </div>
+
+            </div>
+
+
+            {/* =================================================
+                ARCHITECTURE
+            ================================================= */}
 
             <div
               className="
@@ -2071,7 +2675,13 @@ export default function Home() {
               <div>↓</div>
               <div>Constraint Match</div>
               <div>↓</div>
-              <div>SHOWN → SELECTED → HELD → CONFIRMED</div>
+              <div>
+                SHOWN → SELECTED → HELD → CONFIRMED
+              </div>
+              <div>↓</div>
+              <div>
+                Decision Feedback
+              </div>
             </div>
 
           </aside>
@@ -2089,10 +2699,267 @@ export default function Home() {
           Synthetic prototype only. 병원명·의사명·가격은
           가상 데이터이며 constraint_match_score는
           의료적 품질이나 치료 추천 점수가 아닙니다.
+          Decision Feedback은 사용자가 직접 밝힌 이유이고,
+          Decision Loss Signal은 시스템이 관측한 차이입니다.
         </div>
 
       </div>
 
     </main>
+  );
+}
+
+
+// =========================================================
+// Small UI Components
+// =========================================================
+
+function IntentInput({
+  label,
+  value,
+  onChange,
+  type = "text",
+}: {
+  label: string;
+  value: string;
+  onChange: (
+    value: string
+  ) => void;
+  type?: string;
+}) {
+
+  return (
+    <div>
+
+      <label
+        className="
+          text-sm
+          font-bold
+        "
+      >
+        {label}
+      </label>
+
+
+      <input
+        type={type}
+        value={value}
+
+        onChange={
+          event =>
+            onChange(
+              event.target.value
+            )
+        }
+
+        className="
+          mt-2
+          w-full
+          rounded-xl
+          border
+          border-slate-200
+          p-3
+        "
+      />
+
+    </div>
+  );
+}
+
+
+function InfoBox({
+  label,
+  value,
+}: {
+  label: string;
+  value: string;
+}) {
+
+  return (
+    <div
+      className="
+        rounded-xl
+        bg-slate-50
+        p-3
+      "
+    >
+
+      <div
+        className="
+          text-xs
+          text-slate-400
+        "
+      >
+        {label}
+      </div>
+
+
+      <div
+        className="
+          mt-1
+          font-bold
+        "
+      >
+        {value}
+      </div>
+
+    </div>
+  );
+}
+
+
+function ReasonChip({
+  selected,
+  label,
+  onClick,
+}: {
+  selected: boolean;
+  label: string;
+  onClick: () => void;
+}) {
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+
+      className={`
+        rounded-full
+        border
+        px-4
+        py-2
+        text-sm
+        font-bold
+        transition
+
+        ${
+          selected
+            ? "border-blue-600 bg-blue-600 text-white"
+            : "border-slate-200 bg-white text-slate-600 hover:border-slate-400"
+        }
+      `}
+    >
+      {label}
+    </button>
+  );
+}
+
+
+function FeedbackSaved({
+  id,
+  text,
+}: {
+  id: number;
+  text: string;
+}) {
+
+  return (
+    <div
+      className="
+        rounded-xl
+        border
+        border-emerald-200
+        bg-emerald-50
+        p-4
+      "
+    >
+
+      <div
+        className="
+          font-bold
+          text-emerald-700
+        "
+      >
+        {text}
+      </div>
+
+
+      <div
+        className="
+          mt-1
+          text-xs
+          text-emerald-600
+        "
+      >
+        DecisionFeedback #{id}
+      </div>
+
+    </div>
+  );
+}
+
+
+function StepHeader({
+  step,
+  title,
+}: {
+  step: string;
+  title: string;
+}) {
+
+  return (
+    <>
+      <div
+        className="
+          text-xs
+          font-bold
+          text-slate-400
+        "
+      >
+        {step}
+      </div>
+
+      <div
+        className="
+          mt-1
+          font-bold
+        "
+      >
+        {title}
+      </div>
+    </>
+  );
+}
+
+
+function TransactionStep({
+  step,
+  title,
+  children,
+}: {
+  step: string;
+  title: string;
+  children:
+    React.ReactNode;
+}) {
+
+  return (
+    <div
+      className="
+        mt-3
+        rounded-xl
+        border
+        border-slate-200
+        p-4
+      "
+    >
+
+      <StepHeader
+        step={step}
+        title={title}
+      />
+
+
+      <div
+        className="
+          mt-2
+          text-sm
+          text-slate-600
+        "
+      >
+        {children}
+      </div>
+
+    </div>
   );
 }
