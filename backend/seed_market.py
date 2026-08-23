@@ -13,11 +13,18 @@ from app.database import SessionLocal
 from app.models import (
     Appointment,
     AppointmentSlot,
+    CandidateMatch,
+    DecisionEvent,
     Hospital,
+    PatientIntent,
     Provider,
     ProviderOffer,
     RawOfferEvidence,
     SlotHold,
+)
+
+from app.models_decision_feedback import (
+    DecisionFeedback,
 )
 
 
@@ -467,39 +474,119 @@ def seed_market():
 
     try:
 
-        # -------------------------------------------------
-        # 기존 개발용 transaction / market 데이터 삭제
+        # =================================================
+        # 기존 Demo / Transaction / Market 데이터 초기화
         #
-        # FK 때문에 자식 → 부모 순서
-        # -------------------------------------------------
+        # 이 seed는 여러 번 다시 실행할 수 있어야 한다.
+        #
+        # Foreign Key 관계 때문에 반드시:
+        #
+        # 자식 데이터
+        #     ↓
+        # 부모 데이터
+        #
+        # 순서로 삭제한다.
+        #
+        #
+        # DecisionFeedback
+        #     ↓
+        # DecisionEvent
+        #     ↓
+        # Appointment
+        #     ↓
+        # SlotHold
+        #     ↓
+        # CandidateMatch
+        #     ↓
+        # PatientIntent
+        #     ↓
+        # AppointmentSlot
+        #     ↓
+        # ProviderOffer
+        #     ↓
+        # RawOfferEvidence
+        #     ↓
+        # Provider
+        #     ↓
+        # Hospital
+        # =================================================
+
+        db.query(
+            DecisionFeedback
+        ).delete(
+            synchronize_session=False
+        )
+
+
+        db.query(
+            DecisionEvent
+        ).delete(
+            synchronize_session=False
+        )
+
 
         db.query(
             Appointment
-        ).delete()
+        ).delete(
+            synchronize_session=False
+        )
+
 
         db.query(
             SlotHold
-        ).delete()
+        ).delete(
+            synchronize_session=False
+        )
+
+
+        db.query(
+            CandidateMatch
+        ).delete(
+            synchronize_session=False
+        )
+
+
+        db.query(
+            PatientIntent
+        ).delete(
+            synchronize_session=False
+        )
+
 
         db.query(
             AppointmentSlot
-        ).delete()
+        ).delete(
+            synchronize_session=False
+        )
+
 
         db.query(
             ProviderOffer
-        ).delete()
+        ).delete(
+            synchronize_session=False
+        )
+
 
         db.query(
             RawOfferEvidence
-        ).delete()
+        ).delete(
+            synchronize_session=False
+        )
+
 
         db.query(
             Provider
-        ).delete()
+        ).delete(
+            synchronize_session=False
+        )
+
 
         db.query(
             Hospital
-        ).delete()
+        ).delete(
+            synchronize_session=False
+        )
+
 
         db.commit()
 
@@ -917,6 +1004,13 @@ def seed_market():
             "APPOINTMENT SLOTS:",
             slot_count,
         )
+
+
+    except Exception:
+
+        db.rollback()
+
+        raise
 
 
     finally:

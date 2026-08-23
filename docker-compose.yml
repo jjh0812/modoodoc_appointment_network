@@ -1,0 +1,45 @@
+﻿services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_DB: modoodoc
+      POSTGRES_USER: modoodoc
+      POSTGRES_PASSWORD: modoodoc_dev
+
+    ports:
+      - "5435:5432"
+
+    volumes:
+      - modoodoc_postgres_data:/var/lib/postgresql/data
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U modoodoc -d modoodoc"
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+
+    restart: unless-stopped
+
+    environment:
+      DATABASE_URL: postgresql+psycopg://modoodoc:modoodoc_dev@postgres:5432/modoodoc
+
+    ports:
+      - "8001:8001"
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  modoodoc_postgres_data:
