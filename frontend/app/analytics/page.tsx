@@ -1,64 +1,138 @@
 ﻿"use client";
 
-import { useEffect, useState } from "react";
-import type { CSSProperties } from "react";
+import {
+  useEffect,
+  useState,
+} from "react";
 
-import HospitalDecisionTable from "./HospitalDecisionTable";
+import HospitalDecisionTable
+  from "./HospitalDecisionTable";
 
 
-type Funnel = {
-  searched: number;
-  shown: number;
-  selected: number;
-  held: number;
-  confirmed: number;
+type FunnelData = {
+  funnel: {
+    searched: number;
+    shown: number;
+    selected: number;
+    held: number;
+    confirmed: number;
+  };
+
+  conversion_rates_pct: {
+    search_to_shown: number;
+    shown_to_selected: number;
+    selected_to_held: number;
+    held_to_confirmed: number;
+    search_to_confirmed: number;
+  };
+
+  event_counts: {
+    shown: number;
+    selected: number;
+    held: number;
+    confirmed: number;
+  };
+
+  searches_by_source:
+    Record<string, number>;
 };
 
 
-type ConversionRates = {
-  search_to_shown: number;
-  shown_to_selected: number;
-  selected_to_held: number;
-  held_to_confirmed: number;
-  search_to_confirmed: number;
+type ReasonSummary = {
+  reason_code: string;
+  count: number;
+  feedback_share_pct: number;
 };
 
 
-type EventCounts = {
-  shown: number;
-  selected: number;
-  held: number;
-  confirmed: number;
+type FeedbackSummary = {
+  total_feedback: number;
+
+  selection_feedback: {
+    feedback_count: number;
+    reasons: ReasonSummary[];
+  };
+
+  no_selection_feedback: {
+    feedback_count: number;
+    reasons: ReasonSummary[];
+  };
 };
 
 
-type AnalyticsData = {
-  funnel: Funnel;
-  conversion_rates_pct: ConversionRates;
-  event_counts: EventCounts;
-  searches_by_source: Record<string, number>;
-};
+const API_BASE =
+  "http://127.0.0.1:8001";
 
 
-const API_URL =
-  "http://127.0.0.1:8001/analytics/decision-funnel";
+const REASON_LABELS:
+  Record<string, string> = {
+
+    PRICE:
+      "가격",
+
+    AVAILABILITY:
+      "예약 시간",
+
+    LOCATION:
+      "위치",
+
+    DATA_CONFIDENCE:
+      "정보 신뢰도",
+
+    BUDGET_TOO_HIGH:
+      "예산 초과",
+
+    TIME_NOT_MATCH:
+      "시간이 안 맞음",
+
+    LOCATION_NOT_MATCH:
+      "위치가 안 맞음",
+
+    INSUFFICIENT_INFORMATION:
+      "정보 부족",
+
+    OTHER:
+      "기타",
+  };
 
 
 export default function AnalyticsPage() {
 
-  const [data, setData] =
-    useState<AnalyticsData | null>(null);
+  const [
+    funnel,
+    setFunnel,
+  ] = useState<FunnelData | null>(
+    null
+  );
 
-  const [loading, setLoading] =
-    useState(true);
 
-  const [error, setError] =
-    useState<string | null>(null);
+  const [
+    feedback,
+    setFeedback,
+  ] = useState<FeedbackSummary | null>(
+    null
+  );
+
+
+  const [
+    loading,
+    setLoading,
+  ] = useState(
+    true
+  );
+
+
+  const [
+    error,
+    setError,
+  ] = useState<string | null>(
+    null
+  );
 
 
   useEffect(() => {
 
-    async function loadAnalytics() {
+    async function load() {
 
       try {
 
@@ -66,44 +140,81 @@ export default function AnalyticsPage() {
         setError(null);
 
 
-        const response = await fetch(
-          API_URL,
-          {
-            cache: "no-store",
-          }
-        );
+        const [
+          funnelResponse,
+          feedbackResponse,
+        ] = await Promise.all([
+          fetch(
+            `${API_BASE}/analytics/decision-funnel`,
+            {
+              cache:
+                "no-store",
+            }
+          ),
+
+          fetch(
+            `${API_BASE}/analytics/decision-feedback-summary`,
+            {
+              cache:
+                "no-store",
+            }
+          ),
+        ]);
 
 
-        if (!response.ok) {
+        if (!funnelResponse.ok) {
 
           throw new Error(
-            `Analytics API error: ${response.status}`
+            "전체 의사결정 데이터를 불러오지 못했습니다."
           );
         }
 
 
-        const result: AnalyticsData =
-          await response.json();
+        if (!feedbackResponse.ok) {
+
+          throw new Error(
+            "사용자 이유 데이터를 불러오지 못했습니다."
+          );
+        }
 
 
-        setData(result);
+        const funnelData:
+          FunnelData =
+            await funnelResponse.json();
+
+
+        const feedbackData:
+          FeedbackSummary =
+            await feedbackResponse.json();
+
+
+        setFunnel(
+          funnelData
+        );
+
+
+        setFeedback(
+          feedbackData
+        );
 
       } catch (err) {
 
         setError(
           err instanceof Error
             ? err.message
-            : "Unknown error"
+            : "데이터를 불러오지 못했습니다."
         );
 
       } finally {
 
-        setLoading(false);
+        setLoading(
+          false
+        );
       }
     }
 
 
-    loadAnalytics();
+    load();
 
   }, []);
 
@@ -111,479 +222,712 @@ export default function AnalyticsPage() {
   if (loading) {
 
     return (
-      <main style={styles.page}>
-        <div style={styles.loadingCard}>
-          Analytics 데이터를 불러오는 중...
-        </div>
+      <main
+        className="
+          min-h-screen
+          bg-slate-50
+          p-10
+        "
+      >
+        데이터를 불러오는 중...
       </main>
     );
   }
 
 
-  if (error || !data) {
+  if (
+    error
+    ||
+    !funnel
+    ||
+    !feedback
+  ) {
 
     return (
-      <main style={styles.page}>
-
-        <div style={styles.errorCard}>
-
-          <h1 style={styles.errorTitle}>
+      <main
+        className="
+          min-h-screen
+          bg-slate-50
+          p-10
+        "
+      >
+        <div
+          className="
+            mx-auto
+            max-w-3xl
+            rounded-2xl
+            border
+            bg-white
+            p-6
+          "
+        >
+          <h1
+            className="
+              text-xl
+              font-bold
+            "
+          >
             Analytics 연결 실패
           </h1>
 
-          <p>
-            {error ?? "데이터가 없습니다."}
+          <p
+            className="
+              mt-2
+              text-slate-500
+            "
+          >
+            {error}
           </p>
-
-          <p style={styles.muted}>
-            FastAPI가 127.0.0.1:8001에서
-            실행 중인지 확인하세요.
-          </p>
-
         </div>
-
       </main>
     );
   }
 
 
-  const stages = [
-    {
-      label: "SEARCHED",
-      korean: "검색",
-      value: data.funnel.searched,
-    },
-    {
-      label: "SHOWN",
-      korean: "후보 노출",
-      value: data.funnel.shown,
-    },
-    {
-      label: "SELECTED",
-      korean: "선택",
-      value: data.funnel.selected,
-    },
-    {
-      label: "HELD",
-      korean: "HOLD",
-      value: data.funnel.held,
-    },
-    {
-      label: "CONFIRMED",
-      korean: "예약 확정",
-      value: data.funnel.confirmed,
-    },
-  ];
-
-
-  const maxFunnel =
+  const droppedAfterShown =
     Math.max(
-      data.funnel.searched,
-      1
+      0,
+      funnel.funnel.shown
+      -
+      funnel.funnel.selected
     );
 
 
+  const dropRateAfterShown =
+    funnel.funnel.shown > 0
+      ? Math.round(
+          (
+            droppedAfterShown
+            /
+            funnel.funnel.shown
+          )
+          *
+          1000
+        )
+        / 10
+
+      : 0;
+
+
   return (
-    <main style={styles.page}>
 
-      {/* ================================================= */}
-      {/* HEADER */}
-      {/* ================================================= */}
+    <main
+      className="
+        min-h-screen
+        bg-slate-50
+        text-slate-950
+      "
+    >
 
-      <header style={styles.header}>
+      <div
+        className="
+          mx-auto
+          max-w-7xl
+          px-6
+          py-10
+        "
+      >
+
+        {/* =============================================
+            HEADER
+        ============================================= */}
 
         <div>
 
-          <div style={styles.eyebrow}>
-            MODOODOC EXECUTABLE DECISION NETWORK
+          <div
+            className="
+              text-xs
+              font-bold
+              tracking-[0.16em]
+              text-slate-400
+            "
+          >
+            MODOODOC DECISION INTELLIGENCE
           </div>
 
-          <h1 style={styles.title}>
-            Decision Analytics
+
+          <h1
+            className="
+              mt-2
+              text-4xl
+              font-black
+              tracking-tight
+            "
+          >
+            환자 선택 현황
           </h1>
 
-          <p style={styles.subtitle}>
-            환자의 검색이 어떤 후보 노출과 선택을 거쳐
-            실제 예약으로 이어지는지 추적합니다.
+
+          <p
+            className="
+              mt-2
+              text-slate-500
+            "
+          >
+            어디에서 환자가 이탈하고,
+            어떤 이유로 선택하는지 한눈에 봅니다.
           </p>
 
         </div>
 
 
-        <div style={styles.liveBadge}>
-          PROTOTYPE DATA
-        </div>
+        {/* =============================================
+            FUNNEL — 가장 단순한 숫자
+        ============================================= */}
 
-      </header>
+        <section
+          className="
+            mt-8
+            grid
+            gap-3
+            md:grid-cols-4
+          "
+        >
 
-
-      {/* ================================================= */}
-      {/* KPI */}
-      {/* ================================================= */}
-
-      <section style={styles.kpiGrid}>
-
-        <KpiCard
-          label="총 검색"
-          value={data.funnel.searched}
-          description="Patient Intent"
-        />
-
-        <KpiCard
-          label="후보를 받은 검색"
-          value={data.funnel.shown}
-          description={
-            `${data.conversion_rates_pct.search_to_shown}% of searches`
-          }
-        />
-
-        <KpiCard
-          label="후보 선택"
-          value={data.funnel.selected}
-          description={
-            `${data.conversion_rates_pct.shown_to_selected}% of shown`
-          }
-        />
-
-        <KpiCard
-          label="예약 확정"
-          value={data.funnel.confirmed}
-          description={
-            `${data.conversion_rates_pct.search_to_confirmed}% of searches`
-          }
-        />
-
-      </section>
+          <SimpleNumber
+            label="검색"
+            value={
+              funnel.funnel.searched
+            }
+          />
 
 
-      {/* ================================================= */}
-      {/* FUNNEL */}
-      {/* ================================================= */}
+          <SimpleNumber
+            label="후보 제시"
+            value={
+              funnel.funnel.shown
+            }
+          />
 
-      <section style={styles.panel}>
 
-        <div style={styles.panelHeader}>
+          <SimpleNumber
+            label="후보 선택"
+            value={
+              funnel.funnel.selected
+            }
+          />
 
-          <div>
 
-            <h2 style={styles.panelTitle}>
-              Decision Funnel
+          <SimpleNumber
+            label="예약 완료"
+            value={
+              funnel.funnel.confirmed
+            }
+          />
+
+        </section>
+
+
+        {/* =============================================
+            가장 큰 문제
+        ============================================= */}
+
+        <section
+          className="
+            mt-5
+            rounded-2xl
+            bg-slate-950
+            p-7
+            text-white
+          "
+        >
+
+          <div
+            className="
+              text-xs
+              font-bold
+              text-slate-400
+            "
+          >
+            가장 큰 이탈 구간
+          </div>
+
+
+          <div
+            className="
+              mt-3
+              grid
+              items-end
+              gap-5
+              md:grid-cols-[1fr_auto]
+            "
+          >
+
+            <div>
+
+              <h2
+                className="
+                  text-2xl
+                  font-bold
+                "
+              >
+                후보를 본 뒤 선택하지 않음
+              </h2>
+
+
+              <p
+                className="
+                  mt-2
+                  text-slate-300
+                "
+              >
+                후보를 받은{" "}
+                <strong>
+                  {funnel.funnel.shown}건
+                </strong>
+                중{" "}
+                <strong>
+                  {droppedAfterShown}건
+                </strong>
+                이 후보 선택으로 이어지지 않았습니다.
+              </p>
+
+            </div>
+
+
+            <div
+              className="
+                text-right
+              "
+            >
+
+              <div
+                className="
+                  text-5xl
+                  font-black
+                "
+              >
+                {dropRateAfterShown}%
+              </div>
+
+
+              <div
+                className="
+                  mt-1
+                  text-xs
+                  text-slate-400
+                "
+              >
+                후보 노출 → 선택 이탈률
+              </div>
+
+            </div>
+
+          </div>
+
+
+          <div
+            className="
+              mt-6
+              h-3
+              overflow-hidden
+              rounded-full
+              bg-slate-700
+            "
+          >
+
+            <div
+              className="
+                h-full
+                bg-white
+              "
+
+              style={{
+                width:
+                  `${Math.min(
+                    dropRateAfterShown,
+                    100
+                  )}%`,
+              }}
+            />
+
+          </div>
+
+        </section>
+
+
+        {/* =============================================
+            이유
+        ============================================= */}
+
+        <section
+          className="
+            mt-5
+            grid
+            gap-5
+            lg:grid-cols-2
+          "
+        >
+
+          {/* 선택 이유 */}
+
+          <div
+            className="
+              rounded-2xl
+              border
+              border-slate-200
+              bg-white
+              p-6
+            "
+          >
+
+            <div
+              className="
+                text-xs
+                font-bold
+                text-slate-400
+              "
+            >
+              왜 선택했나?
+            </div>
+
+
+            <h2
+              className="
+                mt-1
+                text-xl
+                font-bold
+              "
+            >
+              사용자가 직접 말한 선택 이유
             </h2>
 
-            <p style={styles.panelDescription}>
-              각 단계는 중복 이벤트 수가 아니라
-              Unique Patient Intent 기준입니다.
+
+            <div
+              className="
+                mt-1
+                text-xs
+                text-slate-400
+              "
+            >
+              응답{" "}
+              {
+                feedback
+                  .selection_feedback
+                  .feedback_count
+              }
+              건
+            </div>
+
+
+            {
+              feedback
+                .selection_feedback
+                .feedback_count
+              === 0
+                ? (
+                    <EmptyReason
+                      text="아직 선택 이유 응답이 없습니다."
+                    />
+                  )
+
+                : (
+                    <div
+                      className="
+                        mt-5
+                        space-y-4
+                      "
+                    >
+
+                      {
+                        feedback
+                          .selection_feedback
+                          .reasons
+                          .map(
+                            reason => (
+
+                              <ReasonBar
+                                key={
+                                  reason.reason_code
+                                }
+
+                                label={
+                                  REASON_LABELS[
+                                    reason.reason_code
+                                  ]
+                                  ??
+                                  reason.reason_code
+                                }
+
+                                value={
+                                  reason
+                                    .feedback_share_pct
+                                }
+
+                                count={
+                                  reason.count
+                                }
+                              />
+
+                            )
+                          )
+                      }
+
+                    </div>
+                  )
+            }
+
+
+            <p
+              className="
+                mt-5
+                text-xs
+                leading-5
+                text-slate-400
+              "
+            >
+              한 사용자가 여러 이유를 선택할 수 있어
+              합계가 100%를 넘을 수 있습니다.
             </p>
 
           </div>
 
-        </div>
+
+          {/* 비선택 이유 */}
+
+          <div
+            className="
+              rounded-2xl
+              border
+              border-slate-200
+              bg-white
+              p-6
+            "
+          >
+
+            <div
+              className="
+                text-xs
+                font-bold
+                text-slate-400
+              "
+            >
+              왜 아무것도 선택하지 않았나?
+            </div>
 
 
-        <div style={styles.funnelList}>
-
-          {stages.map(
-            (stage) => {
-
-              const width =
-                Math.max(
-                  5,
-                  (
-                    stage.value
-                    / maxFunnel
-                  )
-                  * 100
-                );
+            <h2
+              className="
+                mt-1
+                text-xl
+                font-bold
+              "
+            >
+              사용자가 직접 말한 이탈 이유
+            </h2>
 
 
-              return (
-                <div
-                  key={stage.label}
-                  style={styles.funnelRow}
-                >
-
-                  <div style={styles.funnelLabel}>
-
-                    <strong>
-                      {stage.korean}
-                    </strong>
-
-                    <span style={styles.funnelCode}>
-                      {stage.label}
-                    </span>
-
-                  </div>
+            <div
+              className="
+                mt-1
+                text-xs
+                text-slate-400
+              "
+            >
+              응답{" "}
+              {
+                feedback
+                  .no_selection_feedback
+                  .feedback_count
+              }
+              건
+            </div>
 
 
-                  <div style={styles.barTrack}>
+            {
+              feedback
+                .no_selection_feedback
+                .feedback_count
+              === 0
 
+                ? (
                     <div
-                      style={{
-                        ...styles.barFill,
-                        width: `${width}%`,
-                      }}
+                      className="
+                        mt-5
+                        rounded-xl
+                        bg-amber-50
+                        p-5
+                      "
                     >
 
-                      <strong>
-                        {stage.value}
-                      </strong>
+                      <div
+                        className="
+                          font-bold
+                          text-amber-800
+                        "
+                      >
+                        아직 직접 이탈 이유가 없습니다.
+                      </div>
+
+
+                      <p
+                        className="
+                          mt-2
+                          text-sm
+                          leading-6
+                          text-amber-700
+                        "
+                      >
+                        현재는 이탈률이 높은 것은 알지만,
+                        사용자가 왜 선택하지 않았는지는
+                        아직 단정할 수 없습니다.
+                      </p>
 
                     </div>
+                  )
 
-                  </div>
+                : (
+                    <div
+                      className="
+                        mt-5
+                        space-y-4
+                      "
+                    >
 
-                </div>
-              );
-            }
-          )}
+                      {
+                        feedback
+                          .no_selection_feedback
+                          .reasons
+                          .map(
+                            reason => (
 
-        </div>
+                              <ReasonBar
+                                key={
+                                  reason.reason_code
+                                }
 
-      </section>
+                                label={
+                                  REASON_LABELS[
+                                    reason.reason_code
+                                  ]
+                                  ??
+                                  reason.reason_code
+                                }
 
+                                value={
+                                  reason
+                                    .feedback_share_pct
+                                }
 
-      {/* ================================================= */}
-      {/* CONVERSION + SOURCE */}
-      {/* ================================================= */}
+                                count={
+                                  reason.count
+                                }
+                              />
 
-      <section style={styles.twoColumn}>
+                            )
+                          )
+                      }
 
-        <div style={styles.panel}>
-
-          <h2 style={styles.panelTitle}>
-            Conversion Rates
-          </h2>
-
-          <p style={styles.panelDescription}>
-            Decision Graph 단계별 전환
-          </p>
-
-
-          <MetricRow
-            label="검색 → 후보 노출"
-            value={
-              data.conversion_rates_pct
-                .search_to_shown
-            }
-          />
-
-          <MetricRow
-            label="후보 노출 → 선택"
-            value={
-              data.conversion_rates_pct
-                .shown_to_selected
-            }
-          />
-
-          <MetricRow
-            label="선택 → HOLD"
-            value={
-              data.conversion_rates_pct
-                .selected_to_held
-            }
-          />
-
-          <MetricRow
-            label="HOLD → 예약 확정"
-            value={
-              data.conversion_rates_pct
-                .held_to_confirmed
-            }
-          />
-
-
-          <div style={styles.finalConversion}>
-
-            <span>
-              전체 검색 → 최종 예약
-            </span>
-
-            <strong style={styles.finalRate}>
-              {
-                data.conversion_rates_pct
-                  .search_to_confirmed
-              }%
-            </strong>
-
-          </div>
-
-        </div>
-
-
-        <div style={styles.panel}>
-
-          <h2 style={styles.panelTitle}>
-            Search Sources
-          </h2>
-
-          <p style={styles.panelDescription}>
-            Patient Intent가 들어온 채널
-          </p>
-
-
-          <div style={styles.sourceList}>
-
-            {Object.entries(
-              data.searches_by_source
-            ).map(
-              ([source, count]) => (
-
-                <div
-                  key={source}
-                  style={styles.sourceRow}
-                >
-
-                  <div>
-
-                    <div style={styles.sourceName}>
-                      {source}
                     </div>
-
-                    <div style={styles.sourceHint}>
-                      Intent source
-                    </div>
-
-                  </div>
-
-
-                  <strong style={styles.sourceCount}>
-                    {count}
-                  </strong>
-
-                </div>
-
-              )
-            )}
+                  )
+            }
 
           </div>
 
-        </div>
-
-      </section>
+        </section>
 
 
-      {/* ================================================= */}
-      {/* EVENTS */}
-      {/* ================================================= */}
+        {/* =============================================
+            병원별
+        ============================================= */}
 
-      <section style={styles.panel}>
+        <div
+          className="
+            mt-5
+          "
+        >
 
-        <h2 style={styles.panelTitle}>
-          Transaction Event Volume
-        </h2>
-
-        <p style={styles.panelDescription}>
-          decision_events 테이블에 실제로 기록된 이벤트 수
-        </p>
-
-
-        <div style={styles.eventGrid}>
-
-          <EventCard
-            label="SHOWN"
-            value={data.event_counts.shown}
-          />
-
-          <EventCard
-            label="SELECTED"
-            value={data.event_counts.selected}
-          />
-
-          <EventCard
-            label="HELD"
-            value={data.event_counts.held}
-          />
-
-          <EventCard
-            label="CONFIRMED"
-            value={data.event_counts.confirmed}
-          />
+          <HospitalDecisionTable />
 
         </div>
 
 
-        <div style={styles.explanationBox}>
+        {/* =============================================
+            개발자 정보는 숨김
+        ============================================= */}
 
-          <strong>
-            왜 SHOWN이 검색보다 많을 수 있나?
-          </strong>
+        <details
+          className="
+            mt-5
+            rounded-2xl
+            border
+            border-slate-200
+            bg-white
+            p-5
+          "
+        >
 
-          <p style={styles.explanationText}>
-            검색 1회에 후보 3개를 보여주면
-            Patient Intent는 1개지만
-            SHOWN DecisionEvent는 3개 생성됩니다.
-          </p>
-
-          <code style={styles.code}>
-            Intent 1개 → Candidate 3개 → SHOWN 3개
-          </code>
-
-        </div>
-
-      </section>
-
-
-      {/* ================================================= */}
-      {/* BUSINESS INTERPRETATION */}
-      {/* ================================================= */}
-
-      <section style={styles.panel}>
-
-        <div style={styles.eyebrow}>
-          WHY THIS MATTERS
-        </div>
-
-        <h2 style={styles.panelTitle}>
-          검색 플랫폼에서 Decision Network로
-        </h2>
+          <summary
+            className="
+              cursor-pointer
+              font-bold
+            "
+          >
+            개발자용 상세 데이터 보기
+          </summary>
 
 
-        <div style={styles.networkFlow}>
+          <div
+            className="
+              mt-5
+              grid
+              gap-3
+              md:grid-cols-3
+            "
+          >
 
-          <FlowBox
-            title="Intent"
-            text="무엇을 원하는가"
-          />
+            <DeveloperCard
+              label="후보 노출 → 선택"
+              value={
+                `${
+                  funnel
+                    .conversion_rates_pct
+                    .shown_to_selected
+                }%`
+              }
+            />
 
-          <div style={styles.flowArrow}>
-            →
+
+            <DeveloperCard
+              label="선택 → HOLD"
+              value={
+                `${
+                  funnel
+                    .conversion_rates_pct
+                    .selected_to_held
+                }%`
+              }
+            />
+
+
+            <DeveloperCard
+              label="전체 검색 → 예약"
+              value={
+                `${
+                  funnel
+                    .conversion_rates_pct
+                    .search_to_confirmed
+                }%`
+              }
+            />
+
           </div>
 
-          <FlowBox
-            title="Candidates"
-            text="무엇을 보여줬는가"
-          />
+        </details>
 
-          <div style={styles.flowArrow}>
-            →
-          </div>
 
-          <FlowBox
-            title="Selection"
-            text="무엇을 골랐는가"
-          />
-
-          <div style={styles.flowArrow}>
-            →
-          </div>
-
-          <FlowBox
-            title="Transaction"
-            text="실제로 예약했는가"
-          />
-
+        <div
+          className="
+            py-8
+            text-center
+            text-xs
+            text-slate-400
+          "
+        >
+          현재 숫자는 개발 과정에서 생성된
+          합성 테스트 데이터입니다.
         </div>
 
-      </section>
-
-
-      <HospitalDecisionTable />
-
-
-      <div style={styles.disclaimer}>
-        현재 수치는 개발 및 테스트 과정에서 생성된
-        합성 데이터입니다. 실제 사업 성과나 의료 품질을
-        의미하지 않습니다.
       </div>
 
     </main>
@@ -591,29 +935,53 @@ export default function AnalyticsPage() {
 }
 
 
-function KpiCard({
+function SimpleNumber({
   label,
   value,
-  description,
 }: {
   label: string;
   value: number;
-  description: string;
 }) {
 
   return (
-    <div style={styles.kpiCard}>
+    <div
+      className="
+        rounded-2xl
+        border
+        border-slate-200
+        bg-white
+        p-5
+      "
+    >
 
-      <div style={styles.kpiLabel}>
+      <div
+        className="
+          text-sm
+          text-slate-500
+        "
+      >
         {label}
       </div>
 
-      <div style={styles.kpiValue}>
+
+      <div
+        className="
+          mt-2
+          text-4xl
+          font-black
+        "
+      >
         {value}
-      </div>
-
-      <div style={styles.kpiDescription}>
-        {description}
+        <span
+          className="
+            ml-1
+            text-sm
+            font-normal
+            text-slate-400
+          "
+        >
+          건
+        </span>
       </div>
 
     </div>
@@ -621,402 +989,153 @@ function KpiCard({
 }
 
 
-function MetricRow({
+function ReasonBar({
   label,
   value,
+  count,
 }: {
   label: string;
   value: number;
+  count: number;
 }) {
 
   return (
-    <div style={styles.metricRow}>
+    <div>
 
-      <span>
-        {label}
-      </span>
+      <div
+        className="
+          mb-2
+          flex
+          items-center
+          justify-between
+          gap-4
+        "
+      >
 
-      <strong>
-        {value}%
-      </strong>
+        <strong
+          className="
+            text-sm
+          "
+        >
+          {label}
+        </strong>
+
+
+        <span
+          className="
+            text-sm
+            font-bold
+          "
+        >
+          {value}%
+        </span>
+
+      </div>
+
+
+      <div
+        className="
+          h-2
+          overflow-hidden
+          rounded-full
+          bg-slate-100
+        "
+      >
+
+        <div
+          className="
+            h-full
+            bg-blue-500
+          "
+
+          style={{
+            width:
+              `${Math.min(
+                value,
+                100
+              )}%`,
+          }}
+        />
+
+      </div>
+
+
+      <div
+        className="
+          mt-1
+          text-right
+          text-xs
+          text-slate-400
+        "
+      >
+        {count}건
+      </div>
 
     </div>
   );
 }
 
 
-function EventCard({
-  label,
-  value,
-}: {
-  label: string;
-  value: number;
-}) {
-
-  return (
-    <div style={styles.eventCard}>
-
-      <div style={styles.eventLabel}>
-        {label}
-      </div>
-
-      <div style={styles.eventValue}>
-        {value}
-      </div>
-
-    </div>
-  );
-}
-
-
-function FlowBox({
-  title,
+function EmptyReason({
   text,
 }: {
-  title: string;
   text: string;
 }) {
 
   return (
-    <div style={styles.flowBox}>
-
-      <strong>
-        {title}
-      </strong>
-
-      <span style={styles.flowText}>
-        {text}
-      </span>
-
+    <div
+      className="
+        mt-5
+        rounded-xl
+        bg-slate-50
+        p-5
+        text-sm
+        text-slate-500
+      "
+    >
+      {text}
     </div>
   );
 }
 
 
-const styles: Record<string, CSSProperties> = {
+function DeveloperCard({
+  label,
+  value,
+}: {
+  label: string;
+  value: string;
+}) {
 
-  page: {
-    minHeight: "100vh",
-    background: "#f6f7f9",
-    color: "#111827",
-    padding: "48px",
-    fontFamily:
-      "Arial, Helvetica, sans-serif",
-  },
+  return (
+    <div
+      className="
+        rounded-xl
+        bg-slate-50
+        p-4
+      "
+    >
 
-  header: {
-    display: "flex",
-    alignItems: "flex-start",
-    justifyContent: "space-between",
-    gap: "24px",
-    marginBottom: "32px",
-    maxWidth: "1400px",
-    marginLeft: "auto",
-    marginRight: "auto",
-  },
+      <div
+        className="
+          text-xs
+          text-slate-400
+        "
+      >
+        {label}
+      </div>
 
-  eyebrow: {
-    fontSize: "11px",
-    fontWeight: 800,
-    letterSpacing: "0.16em",
-    color: "#64748b",
-    marginBottom: "10px",
-  },
 
-  title: {
-    margin: 0,
-    fontSize: "38px",
-    letterSpacing: "-0.04em",
-  },
+      <div
+        className="
+          mt-1
+          text-xl
+          font-bold
+        "
+      >
+        {value}
+      </div>
 
-  subtitle: {
-    marginTop: "12px",
-    color: "#64748b",
-    fontSize: "15px",
-  },
-
-  liveBadge: {
-    border: "1px solid #dbe2ea",
-    borderRadius: "999px",
-    background: "#ffffff",
-    padding: "9px 13px",
-    fontSize: "11px",
-    fontWeight: 800,
-    letterSpacing: "0.08em",
-  },
-
-  kpiGrid: {
-    maxWidth: "1400px",
-    margin: "0 auto 20px auto",
-    display: "grid",
-    gridTemplateColumns:
-      "repeat(auto-fit, minmax(210px, 1fr))",
-    gap: "16px",
-  },
-
-  kpiCard: {
-    background: "#ffffff",
-    border: "1px solid #e4e7ec",
-    borderRadius: "16px",
-    padding: "22px",
-  },
-
-  kpiLabel: {
-    color: "#64748b",
-    fontSize: "13px",
-    fontWeight: 600,
-  },
-
-  kpiValue: {
-    fontSize: "36px",
-    fontWeight: 800,
-    marginTop: "10px",
-    letterSpacing: "-0.04em",
-  },
-
-  kpiDescription: {
-    marginTop: "8px",
-    color: "#94a3b8",
-    fontSize: "12px",
-  },
-
-  panel: {
-    maxWidth: "1400px",
-    margin: "0 auto 20px auto",
-    background: "#ffffff",
-    border: "1px solid #e4e7ec",
-    borderRadius: "16px",
-    padding: "24px",
-  },
-
-  panelHeader: {
-    display: "flex",
-    justifyContent: "space-between",
-  },
-
-  panelTitle: {
-    margin: 0,
-    fontSize: "19px",
-    letterSpacing: "-0.02em",
-  },
-
-  panelDescription: {
-    marginTop: "7px",
-    marginBottom: "20px",
-    color: "#94a3b8",
-    fontSize: "13px",
-  },
-
-  funnelList: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "13px",
-  },
-
-  funnelRow: {
-    display: "grid",
-    gridTemplateColumns: "150px 1fr",
-    alignItems: "center",
-    gap: "16px",
-  },
-
-  funnelLabel: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "3px",
-  },
-
-  funnelCode: {
-    fontSize: "10px",
-    color: "#94a3b8",
-    fontFamily: "monospace",
-  },
-
-  barTrack: {
-    width: "100%",
-    minHeight: "42px",
-    borderRadius: "10px",
-    background: "#f1f5f9",
-    overflow: "hidden",
-  },
-
-  barFill: {
-    minHeight: "42px",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "flex-end",
-    padding: "0 13px",
-    boxSizing: "border-box",
-    borderRadius: "10px",
-    background: "#e2e8f0",
-    transition: "width 0.25s ease",
-  },
-
-  twoColumn: {
-    maxWidth: "1400px",
-    margin: "0 auto",
-    display: "grid",
-    gridTemplateColumns:
-      "repeat(auto-fit, minmax(320px, 1fr))",
-    gap: "20px",
-  },
-
-  metricRow: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    padding: "14px 0",
-    borderBottom: "1px solid #f1f5f9",
-    fontSize: "14px",
-  },
-
-  finalConversion: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginTop: "18px",
-    borderRadius: "12px",
-    background: "#f8fafc",
-    padding: "16px",
-    fontWeight: 700,
-  },
-
-  finalRate: {
-    fontSize: "22px",
-  },
-
-  sourceList: {
-    display: "flex",
-    flexDirection: "column",
-  },
-
-  sourceRow: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    padding: "14px 0",
-    borderBottom: "1px solid #f1f5f9",
-  },
-
-  sourceName: {
-    fontSize: "13px",
-    fontFamily: "monospace",
-    fontWeight: 700,
-  },
-
-  sourceHint: {
-    color: "#94a3b8",
-    fontSize: "11px",
-    marginTop: "4px",
-  },
-
-  sourceCount: {
-    fontSize: "22px",
-  },
-
-  eventGrid: {
-    display: "grid",
-    gridTemplateColumns:
-      "repeat(auto-fit, minmax(150px, 1fr))",
-    gap: "12px",
-  },
-
-  eventCard: {
-    background: "#f8fafc",
-    borderRadius: "12px",
-    padding: "18px",
-  },
-
-  eventLabel: {
-    color: "#64748b",
-    fontSize: "11px",
-    fontFamily: "monospace",
-  },
-
-  eventValue: {
-    marginTop: "8px",
-    fontSize: "28px",
-    fontWeight: 800,
-  },
-
-  explanationBox: {
-    marginTop: "20px",
-    padding: "18px",
-    background: "#f8fafc",
-    borderRadius: "12px",
-    fontSize: "13px",
-  },
-
-  explanationText: {
-    color: "#64748b",
-    marginBottom: "10px",
-  },
-
-  code: {
-    color: "#475569",
-  },
-
-  networkFlow: {
-    marginTop: "22px",
-    display: "flex",
-    alignItems: "center",
-    gap: "10px",
-    flexWrap: "wrap",
-  },
-
-  flowBox: {
-    minWidth: "150px",
-    flex: 1,
-    border: "1px solid #e4e7ec",
-    borderRadius: "12px",
-    padding: "18px",
-    display: "flex",
-    flexDirection: "column",
-  },
-
-  flowText: {
-    marginTop: "7px",
-    color: "#64748b",
-    fontSize: "12px",
-  },
-
-  flowArrow: {
-    color: "#94a3b8",
-    fontSize: "20px",
-  },
-
-  disclaimer: {
-    maxWidth: "1400px",
-    margin: "12px auto 0 auto",
-    paddingBottom: "30px",
-    color: "#94a3b8",
-    fontSize: "11px",
-    textAlign: "center",
-  },
-
-  loadingCard: {
-    maxWidth: "700px",
-    margin: "100px auto",
-    background: "#ffffff",
-    border: "1px solid #e4e7ec",
-    borderRadius: "16px",
-    padding: "30px",
-  },
-
-  errorCard: {
-    maxWidth: "700px",
-    margin: "100px auto",
-    background: "#ffffff",
-    border: "1px solid #e4e7ec",
-    borderRadius: "16px",
-    padding: "30px",
-  },
-
-  errorTitle: {
-    marginTop: 0,
-  },
-
-  muted: {
-    color: "#64748b",
-  },
-};
+    </div>
+  );
+}
