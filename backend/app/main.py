@@ -33,6 +33,14 @@ from app.routers.decision_feedback import (
     router as decision_feedback_router,
 )
 
+from app.routers.health import (
+    router as health_router,
+)
+
+from app.request_context import (
+    RequestContextMiddleware,
+)
+
 
 # =========================================================
 # 1. DB 테이블 생성
@@ -44,7 +52,7 @@ from app.routers.decision_feedback import (
 #
 # 기존 테이블은 유지
 # +
-# 새 decision_feedback 테이블이 없으면 생성
+# 새 테이블이 없으면 생성
 #
 # 한다.
 # =========================================================
@@ -67,7 +75,25 @@ app = FastAPI(
 
 
 # =========================================================
-# 3. CORS 설정
+# 3. Request Context Middleware
+#
+# 모든 HTTP 요청에:
+#
+# 1. X-Request-ID 생성 또는 전달
+# 2. 요청 처리 시간 측정
+# 3. Structured JSON Log 기록
+# 4. Response Header에 X-Request-ID 반환
+#
+# 을 수행한다.
+# =========================================================
+
+app.add_middleware(
+    RequestContextMiddleware
+)
+
+
+# =========================================================
+# 4. CORS 설정
 #
 # Next.js:
 # localhost:3000
@@ -75,7 +101,14 @@ app = FastAPI(
 # FastAPI:
 # localhost:8001
 #
-# 브라우저가 서로 통신할 수 있도록 허용
+# 브라우저가 서로 통신할 수 있도록 허용한다.
+#
+#
+# X-Request-ID:
+#
+# Backend가 반환한 Request ID를
+# Frontend JavaScript에서도 읽을 수 있도록
+# expose_headers에 추가한다.
 # =========================================================
 
 app.add_middleware(
@@ -95,11 +128,15 @@ app.add_middleware(
     allow_headers=[
         "*",
     ],
+
+    expose_headers=[
+        "X-Request-ID",
+    ],
 )
 
 
 # =========================================================
-# 4. Availability API
+# 5. Availability API
 #
 # GET /providers/{provider_id}/availability
 # =========================================================
@@ -110,7 +147,7 @@ app.include_router(
 
 
 # =========================================================
-# 5. HOLD API
+# 6. HOLD API
 #
 # POST /slots/{slot_id}/hold
 #
@@ -127,7 +164,7 @@ app.include_router(
 
 
 # =========================================================
-# 6. Appointment API
+# 7. Appointment API
 #
 # POST /holds/{hold_id}/confirm
 #
@@ -142,7 +179,7 @@ app.include_router(
 
 
 # =========================================================
-# 7. Care Options API
+# 8. Care Options API
 #
 # POST /care-options/search
 #
@@ -167,7 +204,7 @@ app.include_router(
 
 
 # =========================================================
-# 8. Decision Analytics API
+# 9. Decision Analytics API
 #
 # GET /analytics/decision-funnel
 #
@@ -206,7 +243,7 @@ app.include_router(
 
 
 # =========================================================
-# 9. Decision Feedback API
+# 10. Decision Feedback API
 #
 # 사용자가 직접 밝힌
 # "선택 이유 / 비선택 이유" 저장
@@ -245,9 +282,37 @@ app.include_router(
 
 
 # =========================================================
-# 10. Health Check
+# 11. Operational Health API
+#
+# GET /health/live
+#
+# FastAPI 프로세스가
+# 요청을 받을 수 있는지 확인한다.
+#
+#
+# GET /health/ready
+#
+# PostgreSQL까지 실제 연결 가능한지 확인한다.
+#
+# 정상:
+# HTTP 200
+#
+# DB 연결 불가:
+# HTTP 503
+# =========================================================
+
+app.include_router(
+    health_router
+)
+
+
+# =========================================================
+# 12. Legacy Root Health Check
 #
 # GET /
+#
+# 기존 regression_suite.py와
+# 호환성을 유지하기 위해 그대로 둔다.
 # =========================================================
 
 @app.get("/")

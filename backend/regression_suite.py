@@ -42,6 +42,16 @@ BASE_URL = (
 SCRIPT_TESTS = [
     {
         "name":
+            "Operational health and request tracing",
+
+        "file":
+            "operational_health_test.py",
+
+        "expected":
+            "OPERATIONAL HEALTH: PASS",
+    },
+    {
+        "name":
             "Concurrent idempotency",
 
         "file":
